@@ -14,8 +14,8 @@ BOT_PID=""
 
 if [ "${USE_PROXY}" = "true" ] && command -v warp-plus >/dev/null 2>&1; then
     echo "[entrypoint] starting warp-plus (SOCKS5 on ${PROXY_BIND}) ..."
-    # --cfon オプションに変更して TCP 経由の接続を強制
-    warp-plus -b "${PROXY_BIND}" --cfon &
+    # エンドポイントを固定し、エラーの原因になるスキャン機能を無効化
+    warp-plus -b "${PROXY_BIND}" -e 162.159.193.1:443 --scan=false &
     WARP_PID=$!
 else
     if [ "${USE_PROXY}" = "true" ]; then
