@@ -6,8 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-
-ARG WARP_PLUS_VERSION=v1.2.5
+ARG WARP_PLUS_VERSION=1.2.5
 RUN set -eux; \
     ARCH="$(dpkg --print-architecture)"; \
     case "$ARCH" in \
@@ -16,14 +15,14 @@ RUN set -eux; \
         *) echo "unsupported architecture: $ARCH" && exit 1 ;; \
     esac; \
     
-    if curl -fsSL -o /tmp/warp-plus.zip \
-        "https://github.com/bepass-org/warp-plus/releases/download/${WARP_PLUS_VERSION}/warp-plus_${WARP_PLUS_VERSION#v}_${WP_ARCH}.zip"; then \
+    URL="https://github.com/bepass-org/warp-plus/releases/download/v${WARP_PLUS_VERSION}/warp-plus_${WARP_PLUS_VERSION}_${WP_ARCH}.zip"; \
+    if curl -fsSL -o /tmp/warp-plus.zip "$URL"; then \
         unzip -o /tmp/warp-plus.zip -d /opt/warp-plus; \
         mv /opt/warp-plus/warp-plus /usr/local/bin/warp-plus; \
         chmod +x /usr/local/bin/warp-plus; \
         rm -rf /tmp/warp-plus.zip /opt/warp-plus; \
     else \
-        echo "WARNING: warp-plus asset not found for ${WARP_PLUS_VERSION} (arch=${WP_ARCH}), skipping installation."; \
+        echo "ERROR: Failed to download warp-plus from $URL" && exit 1; \
     fi
 
 WORKDIR /app
