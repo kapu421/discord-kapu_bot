@@ -15,7 +15,7 @@ BOT_PID=""
 if [ "${USE_PROXY}" = "true" ] && command -v warp-plus >/dev/null 2>&1; then
     echo "[entrypoint] starting warp-plus (SOCKS5 on ${PROXY_BIND}) ..."
     # -c オプションを外してデフォルトで自動登録・起動させます
-    warp-plus -b "${PROXY_BIND}" &
+    warp-plus -b "${PROXY_BIND}" --gool &
     WARP_PID=$!
 else
     if [ "${USE_PROXY}" = "true" ]; then
