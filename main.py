@@ -58,22 +58,26 @@ intents.message_content = True  # DMで送られてきたメッセージ本文�
 USE_PROXY = os.getenv("USE_PROXY", "true").lower() not in ("false", "0", "no")
 SOCKS5_PROXY_URL = os.getenv("SOCKS5_PROXY_URL", "socks5://127.0.0.1:8086")
 
-connector = None
-if USE_PROXY:
-    if ProxyConnector is None:
-        logger.error("aiohttp-socks がインストールされていません。requirements.txt を確認してください。")
-        sys.exit("aiohttp-socks is required when USE_PROXY=true")
-    if SOCKS5_PROXY_URL:
-        connector = ProxyConnector.from_url(SOCKS5_PROXY_URL)
-        logger.info("SOCKS5プロキシ経由でDiscordに接続します: %s", SOCKS5_PROXY_URL)
-else:
-    logger.info("プロキシなしでDiscordに接続します。")
 
-bot = commands.Bot(
+class MyBot(commands.Bot):
+    async def setup_hook(self):
+        if USE_PROXY:
+            if ProxyConnector is None:
+                logger.error("aiohttp-socks がインストールされていません。requirements.txt を確認してください。")
+                sys.exit("aiohttp-socks is required when USE_PROXY=true")
+            if SOCKS5_PROXY_URL:
+                # イベントループ起動後に ProxyConnector を初期化してセッションにセット
+                connector = ProxyConnector.from_url(SOCKS5_PROXY_URL)
+                self.http.connector = connector
+                logger.info("SOCKS5プロキシ経由でDiscordに接続します: %s", SOCKS5_PROXY_URL)
+        else:
+            logger.info("プロキシなしでDiscordに接続します。")
+
+
+bot = MyBot(
     command_prefix="!",
     intents=intents,
     help_command=None,
-    connector=connector,
 )
 
 # 共通ユーティリティ
