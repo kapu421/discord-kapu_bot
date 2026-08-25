@@ -14,8 +14,8 @@ BOT_PID=""
 
 if [ "${USE_PROXY}" = "true" ] && command -v warp-plus >/dev/null 2>&1; then
     echo "[entrypoint] starting warp-plus (SOCKS5 on ${PROXY_BIND}) ..."
-    # -c にはディレクトリではなくファイル名 (例: /app/.warp-plus-cache/warp.json) を指定します
-    warp-plus -b "${PROXY_BIND}" -c "${CACHE_DIR}/warp.json" &
+    # -c オプションを外してデフォルトで自動登録・起動させます
+    warp-plus -b "${PROXY_BIND}" &
     WARP_PID=$!
 else
     if [ "${USE_PROXY}" = "true" ]; then
