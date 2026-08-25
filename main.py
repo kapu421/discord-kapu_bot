@@ -47,7 +47,7 @@ NG_WORDS = ["死ね"]
 DEVELOPER_USER_ID = 944085652444700702
 
 # DoS/連打対策：ユーザーごとの送信クールダウン（秒）
-ANONYMOUS_MSG_COOLDOWN_SECONDS = 30
+ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
 # key: user_id, value: 最後に送信した時刻（time.monotonic()）
 _last_sent_at: dict[int, float] = {}
 
@@ -757,7 +757,7 @@ async def vc_recruit(interaction: discord.Interaction):
             pass
 
 
-def wait_for_proxy(url: str, timeout: float = 30.0) -> None:
+def wait_for_proxy(url: str, timeout: float = 120.0) -> None:
     """
     warp-plus のSOCKS5ポートが実際にLISTENするまで待つ。
     keep_alive() のFlaskサーバーは既に起動済みの状態でこの待機に入るため、
