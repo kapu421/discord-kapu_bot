@@ -55,9 +55,6 @@ intents = discord.Intents.default()
 intents.message_content = True  # DMで送られてきたメッセージ本文・添付ファイルを匿名転送するために必要
 
 # --- warp-plus 経由のローカルSOCKS5プロキシ設定 ---
-# Render等の無権限コンテナ環境では、同一コンテナ内でバックグラウンド起動した
-# warp-plus (SOCKS5: 127.0.0.1:8086) を経由してDiscord APIへ接続する。
-# USE_PROXY=false にすればプロキシなしの通常接続に戻せる（ローカル開発用）。
 USE_PROXY = os.getenv("USE_PROXY", "true").lower() not in ("false", "0", "no")
 SOCKS5_PROXY_URL = os.getenv("SOCKS5_PROXY_URL", "socks5://127.0.0.1:8086")
 
@@ -66,10 +63,9 @@ if USE_PROXY:
     if ProxyConnector is None:
         logger.error("aiohttp-socks がインストールされていません。requirements.txt を確認してください。")
         sys.exit("aiohttp-socks is required when USE_PROXY=true")
-    async def main():
     if SOCKS5_PROXY_URL:
         connector = ProxyConnector.from_url(SOCKS5_PROXY_URL)
-    logger.info("SOCKS5プロキシ経由でDiscordに接続します: %s", SOCKS5_PROXY_URL)
+        logger.info("SOCKS5プロキシ経由でDiscordに接続します: %s", SOCKS5_PROXY_URL)
 else:
     logger.info("プロキシなしでDiscordに接続します。")
 
