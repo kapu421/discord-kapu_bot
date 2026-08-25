@@ -38,18 +38,16 @@ except ValueError:
 # NGワード
 NG_WORDS = ["死ね"]
 
-# 荒らし対策：匿名メッセージ送信時に送信者情報をDMで通知する開発者のユーザーID
 DEVELOPER_USER_ID = 944085652444700702
 
-# DoS/連打対策：ユーザーごとの送信クールダウン（秒）
+# DoS対策：ユーザーごとの送信クールダウン
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
-# key: user_id, value: 最後に送信した時刻（time.monotonic()）
 _last_sent_at: dict[int, float] = {}
 
 intents = discord.Intents.default()
-intents.message_content = True  # DMで送られてきたメッセージ本文・添付ファイルを匿名転送するために必要
+intents.message_content = True  # DMで送られてきたメッセージ本文、添付ファイルを匿名転送するために必要
 
-# --- プロキシ設定 (Webshare等のHTTP/HTTPSプロキシ用) ---
+#Webshare等のHTTP/HTTPSプロキシ用
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
 PROXY_URL = os.getenv("PROXY_URL")
 
@@ -58,7 +56,7 @@ class MyBot(commands.Bot):
     pass
 
 
-# プロキシを使用する場合は commands.Bot の proxy 引数に渡す
+# プロキシを使用する場合は commands.Bot の proxy 引数に
 proxy_to_use = PROXY_URL if (USE_PROXY and PROXY_URL) else None
 
 if USE_PROXY:
@@ -73,7 +71,7 @@ bot = MyBot(
     command_prefix="!",
     intents=intents,
     help_command=None,
-    proxy=proxy_to_use,  # WebshareなどのプロキシURLを直接設定
+    proxy=proxy_to_use,
 )
 
 # 共通ユーティリティ
@@ -198,7 +196,7 @@ class AnonymousMessageModal(discord.ui.Modal, title="匿名メッセージを送
             pass
 
 
-# ボタン（View）
+# ボタン
 
 class AnonymousMessageView(discord.ui.View):
     def __init__(self):
@@ -446,11 +444,12 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    if not isinstance(message.channel, discord.DMChannel):
-        await bot.process_commands(message)
+    # DMの場合は匿名送信処理
+    if isinstance(message.channel, discord.DMChannel):
+        await handle_anonymous_dm(message)
         return
 
-    await handle_anonymous_dm(message)
+    # 通常のテキストチャンネルの場合はコマンド処理
     await bot.process_commands(message)
 
 
@@ -555,12 +554,9 @@ async def handle_anonymous_dm(message: discord.Message):
 async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
-        await bot.tree.sync()
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
-        logger.info("App commands synced.")
     except Exception as e:
-        logger.exception("Failed to sync app commands: %s", e)
-
+        logger.exception("Failed in on_ready: %s", e)
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -661,7 +657,7 @@ async def vc_recruit(interaction: discord.Interaction):
 
 if __name__ == "__main__":
     try:
-        keep_alive()  # UptimeRobotなどのping用Webサーバー起動
+        keep_alive()
         bot.run(BOT_TOKEN)
     except Exception as e:
         logger.exception("Bot の実行に失敗しました: %s", e)
