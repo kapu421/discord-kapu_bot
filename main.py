@@ -66,7 +66,9 @@ if USE_PROXY:
     if ProxyConnector is None:
         logger.error("aiohttp-socks がインストールされていません。requirements.txt を確認してください。")
         sys.exit("aiohttp-socks is required when USE_PROXY=true")
-    connector = ProxyConnector.from_url(SOCKS5_PROXY_URL)
+    async def main():
+    if SOCKS5_PROXY_URL:
+        connector = ProxyConnector.from_url(SOCKS5_PROXY_URL)
     logger.info("SOCKS5プロキシ経由でDiscordに接続します: %s", SOCKS5_PROXY_URL)
 else:
     logger.info("プロキシなしでDiscordに接続します。")
