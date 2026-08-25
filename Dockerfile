@@ -6,7 +6,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         unzip \
     && rm -rf /var/lib/apt/lists/*
 
-ARG WARP_PLUS_VERSION=1.2.5
+ARG WARP_PLUS_VERSION=1.2.6
+
 RUN set -eux; \
     ARCH="$(dpkg --print-architecture)"; \
     case "$ARCH" in \
@@ -14,8 +15,8 @@ RUN set -eux; \
         arm64) WP_ARCH="linux-arm64" ;; \
         *) echo "unsupported architecture: $ARCH" && exit 1 ;; \
     esac; \
-    
-    URL="https://github.com/bepass-org/warp-plus/releases/download/v${WARP_PLUS_VERSION}/warp-plus_${WARP_PLUS_VERSION}_${WP_ARCH}.zip"; \
+    # バージョン名やURLフォーマットを確認
+    URL="https://github.com/bepass-org/warp-plus/releases/download/v${WARP_PLUS_VERSION}/warp-plus_${WP_ARCH}.zip"; \
     if curl -fsSL -o /tmp/warp-plus.zip "$URL"; then \
         unzip -o /tmp/warp-plus.zip -d /opt/warp-plus; \
         mv /opt/warp-plus/warp-plus /usr/local/bin/warp-plus; \
