@@ -2,7 +2,6 @@ import os
 import logging
 import sys
 import time
-import json
 from typing import Optional
 
 import discord
@@ -45,12 +44,16 @@ DEVELOPER_USER_ID = 944085652444700702
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
 _last_sent_at: dict[int, float] = {}
 
-# --- Intents 設定 ---
-intents = discord.Intents.default()
-intents.message_content = True  # DMで送られてきたメッセージ本文、添付ファイルを匿名転送するために必要
-intents.voice_states = True     # ★修正点: VCの入退室（監視）イベントを取得するために必要
+# 自動管理用データ保持構造
+# { vc_id: {"channel_id": int, "message_id": int} }
+active_recruitments: dict[int, dict] = {}
+# 自動作成されたTemp VCのIDを追跡するセット
+managed_temp_vcs: set[int] = set()
 
-#Webshare等のHTTP/HTTPSプロキシ用
+intents = discord.Intents.default()
+intents.message_content = True  # DMおよびメッセージ本文の取得用
+
+# Webshare等のHTTP/HTTPSプロキシ用
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
 PROXY_URL = os.getenv("PROXY_URL")
 
@@ -59,7 +62,6 @@ class MyBot(commands.Bot):
     pass
 
 
-# プロキシを使用する場合は commands.Bot の proxy 引数に
 proxy_to_use = PROXY_URL if (USE_PROXY and PROXY_URL) else None
 
 if USE_PROXY:
@@ -77,7 +79,9 @@ bot = MyBot(
     proxy=proxy_to_use,
 )
 
+# ---------------------------------------------------------
 # 共通ユーティリティ
+# ---------------------------------------------------------
 
 def contains_ng_word(text: str) -> bool:
     for w in NG_WORDS:
@@ -120,11 +124,11 @@ async def send_anonymous_message(interaction: discord.Interaction, message: str)
             channel = await bot.fetch_channel(CHANNEL_ID)
         except Exception as e:
             logger.exception("転送先チャンネルの取得に失敗: %s", e)
-            await interaction.response.send_message("送信に失敗しました（チャンネルが見つかりません）。管理者に連絡してください。", ephemeral=True)
+            await interaction.response.send_message("送信に失敗しました（チャンネルが見つかりません）。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
             return
 
     if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.PartialMessageable, discord.abc.Messageable)):
-        await interaction.response.send_message("送信先チャンネルのタイプが不正です。管理者に連絡してください。", ephemeral=True)
+        await interaction.response.send_message("送信先チャンネルのタイプが不正です。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         return
 
     content = "📩 **匿名メッセージが届きました**\n" + quoted_block(message)
@@ -133,11 +137,11 @@ async def send_anonymous_message(interaction: discord.Interaction, message: str)
         await channel.send(content)
     except discord.Forbidden:
         logger.exception("Bot に送信権限がありません。")
-        await interaction.response.send_message("ボットにチャンネルへの送信権限がありません。管理者に連絡してください。", ephemeral=True)
+        await interaction.response.send_message("ボットにチャンネルへの送信権限がありません。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         return
     except Exception as e:
         logger.exception("メッセージ送信中にエラーが発生しました: %s", e)
-        await interaction.response.send_message("送信中にエラーが発生しました。あとでもう一度試してください。", ephemeral=True)
+        await interaction.response.send_message("送信中にエラーが発生しました。あとでもう一度試すか、Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         return
 
     guild_name = interaction.guild.name if interaction.guild else "DM/不明"
@@ -170,7 +174,9 @@ async def log_sender_for_moderation(user: discord.abc.User, guild_name: str, gui
         logger.exception("開発者への送信者ログDM送信に失敗しました: %s", e)
 
 
-# モーダル
+# ---------------------------------------------------------
+# 匿名メッセージ機能
+# ---------------------------------------------------------
 
 class AnonymousMessageModal(discord.ui.Modal, title="匿名メッセージを送る"):
     message_input = discord.ui.TextInput(
@@ -187,19 +193,10 @@ class AnonymousMessageModal(discord.ui.Modal, title="匿名メッセージを送
         except Exception as e:
             logger.exception("モーダル送信処理中にエラーが発生しました: %s", e)
             try:
-                await interaction.response.send_message("エラーが発生しました。管理者に連絡してください。", ephemeral=True)
+                await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
             except Exception:
                 pass
 
-    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
-        logger.exception("モーダルでエラーが発生しました: %s", error)
-        try:
-            await interaction.response.send_message("エラーが発生しました。管理者に連絡してください。", ephemeral=True)
-        except Exception:
-            pass
-
-
-# ボタン
 
 class AnonymousMessageView(discord.ui.View):
     def __init__(self):
@@ -215,7 +212,121 @@ class AnonymousMessageView(discord.ui.View):
         await interaction.response.send_modal(AnonymousMessageModal())
 
 
+# ---------------------------------------------------------
+# Temp VC（一時VC・プライベートVC）機能
+# ---------------------------------------------------------
+
+class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
+    vc_name = discord.ui.TextInput(
+        label="チャンネル名（任意）",
+        placeholder="例: 雑談部屋（空欄でデフォルト名）",
+        required=False,
+        max_length=30
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+
+        if not isinstance(member, discord.Member):
+            await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
+            return
+
+        name = self.vc_name.value.strip() or f"🔊 {member.display_name}の部屋"
+        category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+
+        try:
+            vc = await guild.create_voice_channel(name=name, category=category)
+            managed_temp_vcs.add(vc.id)
+
+            if member.voice and member.voice.channel:
+                await member.move_to(vc)
+                await interaction.followup.send(f"✅ {vc.mention} を作成し、移動しました！", ephemeral=True)
+            else:
+                await interaction.followup.send(f"✅ {vc.mention} を作成しました！（VCに参加すると自動管理されます）", ephemeral=True)
+        except Exception as e:
+            logger.exception("一時VC作成中にエラーが発生しました: %s", e)
+            await interaction.followup.send("VCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
+
+
+class PrivateVCUserSelectView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="招待するメンバーを選択してください（複数選択可）",
+        min_values=1,
+        max_values=10
+    )
+    async def select_users(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        member = interaction.user
+
+        if not isinstance(member, discord.Member):
+            await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
+            return
+
+        category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(connect=False),
+            member: discord.PermissionOverwrite(connect=True, move_members=True, manage_channels=True)
+        }
+        for target in select.values:
+            if isinstance(target, (discord.Member, discord.User)):
+                overwrites[target] = discord.PermissionOverwrite(connect=True)
+
+        try:
+            vc = await guild.create_voice_channel(
+                name=f"🔒 {member.display_name}の秘密部屋",
+                category=category,
+                overwrites=overwrites
+            )
+            managed_temp_vcs.add(vc.id)
+
+            if member.voice and member.voice.channel:
+                await member.move_to(vc)
+                await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成し、移動しました！", ephemeral=True)
+            else:
+                await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成しました！", ephemeral=True)
+        except Exception as e:
+            logger.exception("プライベートVC作成中にエラーが発生しました: %s", e)
+            await interaction.followup.send("プライベートVCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
+
+
+class TempVCPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="一時VCを作成",
+        style=discord.ButtonStyle.primary,
+        emoji="🔊",
+        custom_id="create_temp_vc_button"
+    )
+    async def create_temp_vc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(TempVCModal())
+
+    @discord.ui.button(
+        label="プライベートVCを作成",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔒",
+        custom_id="create_private_vc_button"
+    )
+    async def create_private_vc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "🔒 **招待したいメンバーを以下から選んでください：**",
+            view=PrivateVCUserSelectView(),
+            ephemeral=True
+        )
+
+
+# ---------------------------------------------------------
 # VC募集機能
+# ---------------------------------------------------------
 
 RECRUIT_TARGET_CHANNEL_ID = 1535644078660780153
 
@@ -229,35 +340,6 @@ MENTION_ROLE_CHOICES = [
 ]
 
 CONTENT_CHOICES = ["雑談", "ゲーム", "作業・勉強", "その他"]
-
-VC_CHANNEL_IDS = [
-    1430828208277946432,
-    1430828208277946433,
-    1529408955594440704,
-]
-
-# --- ★追加: Bot再起動時のデータ消失対策 (JSON保存) ---
-DATA_FILE = "active_recruitments.json"
-
-def load_recruitments() -> dict[int, dict]:
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return {int(k): v for k, v in data.items()}
-        except Exception as e:
-            logger.exception("募集データの読み込みに失敗しました: %s", e)
-            return {}
-    return {}
-
-def save_recruitments():
-    try:
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(active_recruitments, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logger.exception("募集データの保存に失敗しました: %s", e)
-
-active_recruitments: dict[int, dict] = load_recruitments()
 
 
 class RoleSelect(discord.ui.Select):
@@ -304,10 +386,13 @@ class ContentSelect(discord.ui.Select):
 class VCSelect(discord.ui.Select):
     def __init__(self, guild: Optional[discord.Guild]):
         options = []
-        for ch_id in VC_CHANNEL_IDS:
-            channel = guild.get_channel(ch_id) if guild else None
-            label = channel.name if channel else f"VCチャンネル ({ch_id})"
-            options.append(discord.SelectOption(label=label[:100], value=str(ch_id)))
+        if guild:
+            voice_channels = guild.voice_channels[:25]
+            for vc in voice_channels:
+                options.append(discord.SelectOption(label=vc.name[:100], value=str(vc.id)))
+
+        if not options:
+            options.append(discord.SelectOption(label="利用可能なVCが見つかりません", value="none"))
 
         super().__init__(
             placeholder="使用するVCチャンネルを選択",
@@ -318,6 +403,9 @@ class VCSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view: VCRecruitView = self.view  # type: ignore
+        if self.values[0] == "none":
+            await interaction.response.send_message("利用可能なVCチャンネルが選択されていません。", ephemeral=True)
+            return
         view.vc_id = int(self.values[0])
         await view.update_message(interaction)
 
@@ -359,7 +447,7 @@ class VCExtraModal(discord.ui.Modal, title="募集の一言（任意）"):
             except Exception as e:
                 logger.exception("募集送信先チャンネルの取得に失敗: %s", e)
                 await interaction.response.send_message(
-                    "送信先チャンネルが見つかりませんでした。管理者に連絡してください。", ephemeral=True
+                    "送信先チャンネルが見つかりませんでした。Kapu (discord: kapu421) に連絡してください。", ephemeral=True
                 )
                 return
 
@@ -371,7 +459,7 @@ class VCExtraModal(discord.ui.Modal, title="募集の一言（任意）"):
         except discord.Forbidden:
             logger.exception("募集メッセージ送信権限がありません。")
             await interaction.response.send_message(
-                "募集メッセージを送信する権限がありません。管理者に連絡してください。", ephemeral=True
+                "募集メッセージを送信する権限がありません。Kapu (discord: kapu421) に連絡してください。", ephemeral=True
             )
             return
         except Exception as e:
@@ -383,7 +471,6 @@ class VCExtraModal(discord.ui.Modal, title="募集の一言（任意）"):
             "channel_id": target_channel.id,
             "message_id": sent_message.id,
         }
-        save_recruitments()  # ★データファイルへ書き込み保存
 
         await interaction.response.send_message("募集を送信しました！", ephemeral=True)
 
@@ -399,7 +486,7 @@ class VCExtraModal(discord.ui.Modal, title="募集の一言（任意）"):
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         logger.exception("VC募集モーダルでエラーが発生しました: %s", error)
         try:
-            await interaction.response.send_message("エラーが発生しました。管理者に連絡してください。", ephemeral=True)
+            await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
 
@@ -450,31 +537,20 @@ class VCRecruitView(discord.ui.View):
     async def update_message(self, interaction: discord.Interaction):
         await interaction.response.edit_message(content=self.status_text(), view=self)
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
-        try:
-            await self.origin_interaction.edit_original_response(
-                content="⌛ 時間切れのため募集UIを終了しました。もう一度 /vc を実行してください。",
-                view=self,
-            )
-        except Exception:
-            pass
 
-
-# イベント
+# ---------------------------------------------------------
+# イベントハンドラー
+# ---------------------------------------------------------
 
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # DMの場合は匿名送信処理
     if isinstance(message.channel, discord.DMChannel):
         await handle_anonymous_dm(message)
         return
 
-    # 通常のテキストチャンネルの場合はコマンド処理
     await bot.process_commands(message)
 
 
@@ -528,7 +604,7 @@ async def handle_anonymous_dm(message: discord.Message):
         except Exception as e:
             logger.exception("転送先チャンネルの取得に失敗: %s", e)
             try:
-                await message.channel.send("送信に失敗しました。管理者に連絡してください。")
+                await message.channel.send("送信に失敗しました。Kapu (discord: kapu421) に連絡してください。")
             except Exception:
                 pass
             return
@@ -555,14 +631,14 @@ async def handle_anonymous_dm(message: discord.Message):
     except discord.Forbidden:
         logger.exception("Bot に送信権限がありません。")
         try:
-            await message.channel.send("ボットにチャンネルへの送信権限がありません。管理者に連絡してください。")
+            await message.channel.send("ボットにチャンネルへの送信権限がありません。Kapu (discord: kapu421) に連絡してください。")
         except Exception:
             pass
         return
     except Exception as e:
         logger.exception("DMメッセージ転送中にエラーが発生しました: %s", e)
         try:
-            await message.channel.send("送信中にエラーが発生しました。あとでもう一度試してください。")
+            await message.channel.send("送信中にエラーが発生しました。あとでもう一度試すか、Kapu (discord: kapu421) に連絡してください。")
         except Exception:
             pass
         return
@@ -579,9 +655,11 @@ async def handle_anonymous_dm(message: discord.Message):
 async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
+        bot.add_view(TempVCPanelView())
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         logger.exception("Failed in on_ready: %s", e)
+
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -592,34 +670,38 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if after.channel is not None and after.channel.id == left_channel.id:
         return
 
+    # 1. 募集機能のメッセージ更新処理
     info = active_recruitments.get(left_channel.id)
-    if info is None:
-        return
+    if info is not None and len(left_channel.members) == 0:
+        active_recruitments.pop(left_channel.id, None)
+        try:
+            msg_channel = bot.get_channel(info["channel_id"]) or await bot.fetch_channel(info["channel_id"])
+            message = await msg_channel.fetch_message(info["message_id"])
 
-    if len(left_channel.members) > 0:
-        return
+            if message.embeds:
+                embed = message.embeds[0]
+                embed.title = "🔴【募集終了】VC募集"
+                embed.color = discord.Color.dark_gray()
+                embed.add_field(name="状態", value="VCが空になったため、この募集は終了しました。", inline=False)
+                await message.edit(embed=embed)
+        except Exception as e:
+            logger.exception("募集終了メッセージの更新に失敗しました: %s", e)
 
-    active_recruitments.pop(left_channel.id, None)
-    save_recruitments()  # ★データファイルから削除・保存
-
-    try:
-        msg_channel = bot.get_channel(info["channel_id"])
-        if msg_channel is None:
-            msg_channel = await bot.fetch_channel(info["channel_id"])
-
-        message = await msg_channel.fetch_message(info["message_id"])
-
-        if message.embeds:
-            embed = message.embeds[0]
-            embed.title = "🔴【募集終了】VC募集"
-            embed.color = discord.Color.dark_gray()
-            embed.add_field(name="状態", value="VCが空になったため、この募集は終了しました。", inline=False)
-            await message.edit(embed=embed)
-    except Exception as e:
-        logger.exception("募集終了メッセージの更新に失敗しました: %s", e)
+    # 2. 自動作成された一時VC / プライベートVCの削除処理
+    if left_channel.id in managed_temp_vcs and len(left_channel.members) == 0:
+        try:
+            managed_temp_vcs.remove(left_channel.id)
+            await left_channel.delete(reason="一時VCの参加者が0人になったため自動削除")
+            logger.info(f"一時VC (ID: {left_channel.id}) を自動削除しました。")
+        except discord.NotFound:
+            pass
+        except Exception as e:
+            logger.exception("一時VCの削除中にエラーが発生しました: %s", e)
 
 
+# ---------------------------------------------------------
 # スラッシュコマンド
+# ---------------------------------------------------------
 
 @bot.tree.command(name="secret-msg", description="匿名で管理者チャンネルにメッセージを送信します")
 @app_commands.describe(message="送信したいメッセージ")
@@ -629,7 +711,7 @@ async def secret_msg(interaction: discord.Interaction, message: str):
     except Exception as e:
         logger.exception("予期しないエラー: %s", e)
         try:
-            await interaction.response.send_message("エラーが発生しました。管理者に連絡してください。", ephemeral=True)
+            await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
 
@@ -656,14 +738,37 @@ async def setup_anonymous(interaction: discord.Interaction):
         await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
 
 
+@bot.tree.command(name="setup-tempvc", description="【管理者用】このチャンネルに一時VC作成パネルを設置します")
+@app_commands.checks.has_permissions(manage_guild=True)
+async def setup_tempvc(interaction: discord.Interaction):
+    try:
+        embed = discord.Embed(
+            title="🔊 一時VC作成パネル",
+            description=(
+                "下のボタンを押すことで、自分専用のVCをサクッと作れます！\n"
+                "誰でも入れる一時部屋か、指定メンバー専用のプライベート部屋を選択できます。\n\n"
+                "※全員がVCから退出すると、部屋は自動的に削除されます。"
+            ),
+            color=discord.Color.green(),
+        )
+        await interaction.channel.send(embed=embed, view=TempVCPanelView())
+        await interaction.response.send_message("一時VC作成パネルを設置しました。", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("ボットにこのチャンネルへの送信権限がありません。", ephemeral=True)
+    except Exception as e:
+        logger.exception("setup-tempvc 実行中にエラーが発生しました: %s", e)
+        await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+
+
 @setup_anonymous.error
-async def setup_anonymous_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+@setup_tempvc.error
+async def admin_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         await interaction.response.send_message("このコマンドはサーバー管理権限を持つ人のみ実行できます。", ephemeral=True)
     else:
-        logger.exception("setup-anonymous コマンドエラー: %s", error)
+        logger.exception("コマンドエラー: %s", error)
         try:
-            await interaction.response.send_message("エラーが発生しました。", ephemeral=True)
+            await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
 
@@ -676,7 +781,7 @@ async def vc_recruit(interaction: discord.Interaction):
     except Exception as e:
         logger.exception("/vc コマンド実行中にエラーが発生しました: %s", e)
         try:
-            await interaction.response.send_message("エラーが発生しました。管理者に連絡してください。", ephemeral=True)
+            await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
 
