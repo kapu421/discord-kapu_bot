@@ -39,23 +39,21 @@ except ValueError:
 NG_WORDS = ["死ね"]
 
 DEVELOPER_USER_ID = 944085652444700702
-BOT_ROLE_ID = 1430878162320887949  # 除外対象のBotロールID
+BOT_ROLE_ID = 1430878162320887949       # 除外対象のBotロールID
+TARGET_CATEGORY_ID = 1430828208277946431 # VC作成先のカテゴリID
 
 # DoS対策：ユーザーごとの送信クールダウン
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
 _last_sent_at: dict[int, float] = {}
 
 # 自動管理用データ保持構造
-# { vc_id: {"channel_id": int, "message_id": int} }
 active_recruitments: dict[int, dict] = {}
-# 自動作成されたTemp VCのIDを追跡するセット
 managed_temp_vcs: set[int] = set()
 
 intents = discord.Intents.default()
-intents.message_content = True  # DMおよびメッセージ本文の取得用
-intents.members = True          # メンバーリスト取得用
+intents.message_content = True
+intents.members = True
 
-# Webshare等のHTTP/HTTPSプロキシ用
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
 PROXY_URL = os.getenv("PROXY_URL")
 
@@ -236,17 +234,21 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
             return
 
         name = self.vc_name.value.strip() or f"🔊 {member.display_name}の部屋"
-        category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+        category = guild.get_channel(TARGET_CATEGORY_ID)
 
         try:
-            vc = await guild.create_voice_channel(name=name, category=category)
+            vc = await guild.create_voice_channel(
+                name=name,
+                category=category if isinstance(category, discord.CategoryChannel) else None
+            )
             managed_temp_vcs.add(vc.id)
 
+            # 作成者がどこかのVCに参加していれば作成したVCへ自動移動させる
             if member.voice and member.voice.channel:
                 await member.move_to(vc)
                 await interaction.followup.send(f"✅ {vc.mention} を作成し、移動しました！", ephemeral=True)
             else:
-                await interaction.followup.send(f"✅ {vc.mention} を作成しました！（VCに参加すると自動管理されます）", ephemeral=True)
+                await interaction.followup.send(f"✅ {vc.mention} を作成しました！（VCに参加した状態で実行すると自動移動します）", ephemeral=True)
         except Exception as e:
             logger.exception("一時VC作成中にエラーが発生しました: %s", e)
             await interaction.followup.send("VCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
@@ -256,10 +258,8 @@ class PrivateVCUserSelect(discord.ui.Select):
     def __init__(self, guild: discord.Guild, author: discord.Member):
         options = []
         for member in guild.members:
-            # Botアカウントまたは作成者自身を除外
             if member.bot or member.id == author.id:
                 continue
-            # 指定のBotロールを持っていれば除外
             has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
             if not has_bot_role:
                 options.append(
@@ -270,7 +270,7 @@ class PrivateVCUserSelect(discord.ui.Select):
                     )
                 )
 
-        options = options[:25]  # Discord UIの制限上限25個
+        options = options[:25]
 
         if not options:
             options.append(
@@ -299,7 +299,7 @@ class PrivateVCUserSelect(discord.ui.Select):
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
             return
 
-        category = interaction.channel.category if isinstance(interaction.channel, discord.TextChannel) else None
+        category = guild.get_channel(TARGET_CATEGORY_ID)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(connect=False),
@@ -314,16 +314,17 @@ class PrivateVCUserSelect(discord.ui.Select):
         try:
             vc = await guild.create_voice_channel(
                 name=f"🔒 {member.display_name}の秘密部屋",
-                category=category,
+                category=category if isinstance(category, discord.CategoryChannel) else None,
                 overwrites=overwrites
             )
             managed_temp_vcs.add(vc.id)
 
+            # 作成者がどこかのVCに参加していれば作成したプライベートVCへ自動移動させる
             if member.voice and member.voice.channel:
                 await member.move_to(vc)
                 await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成し、移動しました！", ephemeral=True)
             else:
-                await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成しました！", ephemeral=True)
+                await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成しました！（VCに参加した状態で実行すると自動移動します）", ephemeral=True)
         except Exception as e:
             logger.exception("プライベートVC作成中にエラーが発生しました: %s", e)
             await interaction.followup.send("プライベートVCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
@@ -699,7 +700,6 @@ async def on_ready():
         bot.add_view(AnonymousMessageView())
         bot.add_view(TempVCPanelView())
         
-        # スラッシュコマンドをDiscordに同期する
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} command(s)")
         
@@ -717,7 +717,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
     if after.channel is not None and after.channel.id == left_channel.id:
         return
 
-    # 1. 募集機能のメッセージ更新処理
     info = active_recruitments.get(left_channel.id)
     if info is not None and len(left_channel.members) == 0:
         active_recruitments.pop(left_channel.id, None)
@@ -734,7 +733,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         except Exception as e:
             logger.exception("募集終了メッセージの更新に失敗しました: %s", e)
 
-    # 2. 自動作成された一時VC / プライベートVCの削除処理
     if left_channel.id in managed_temp_vcs and len(left_channel.members) == 0:
         try:
             managed_temp_vcs.remove(left_channel.id)
