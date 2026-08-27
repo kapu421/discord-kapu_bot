@@ -656,6 +656,11 @@ async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
         bot.add_view(TempVCPanelView())
+        
+        # スラッシュコマンドをDiscordに同期する
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s)")
+        
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         logger.exception("Failed in on_ready: %s", e)
