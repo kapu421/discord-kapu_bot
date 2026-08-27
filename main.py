@@ -2,6 +2,7 @@ import os
 import logging
 import sys
 import time
+import json
 from typing import Optional
 
 import discord
@@ -26,7 +27,7 @@ if not BOT_TOKEN:
 
 if not CHANNEL_ID_STR:
     logger.error("CHANNEL_ID が .env に設定されていません。")
-    sys.exit("CHANNEL_ID is required in .env")
+    sys.exit("CHANNEL_ID must be an integer in .env")
 
 try:
     CHANNEL_ID = int(CHANNEL_ID_STR)
@@ -44,8 +45,10 @@ DEVELOPER_USER_ID = 944085652444700702
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
 _last_sent_at: dict[int, float] = {}
 
+# --- Intents 設定 ---
 intents = discord.Intents.default()
 intents.message_content = True  # DMで送られてきたメッセージ本文、添付ファイルを匿名転送するために必要
+intents.voice_states = True     # ★修正点: VCの入退室（監視）イベントを取得するために必要
 
 #Webshare等のHTTP/HTTPSプロキシ用
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
@@ -233,7 +236,28 @@ VC_CHANNEL_IDS = [
     1529408955594440704,
 ]
 
-active_recruitments: dict[int, dict] = {}
+# --- ★追加: Bot再起動時のデータ消失対策 (JSON保存) ---
+DATA_FILE = "active_recruitments.json"
+
+def load_recruitments() -> dict[int, dict]:
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return {int(k): v for k, v in data.items()}
+        except Exception as e:
+            logger.exception("募集データの読み込みに失敗しました: %s", e)
+            return {}
+    return {}
+
+def save_recruitments():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(active_recruitments, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.exception("募集データの保存に失敗しました: %s", e)
+
+active_recruitments: dict[int, dict] = load_recruitments()
 
 
 class RoleSelect(discord.ui.Select):
@@ -359,6 +383,7 @@ class VCExtraModal(discord.ui.Modal, title="募集の一言（任意）"):
             "channel_id": target_channel.id,
             "message_id": sent_message.id,
         }
+        save_recruitments()  # ★データファイルへ書き込み保存
 
         await interaction.response.send_message("募集を送信しました！", ephemeral=True)
 
@@ -575,6 +600,7 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
 
     active_recruitments.pop(left_channel.id, None)
+    save_recruitments()  # ★データファイルから削除・保存
 
     try:
         msg_channel = bot.get_channel(info["channel_id"])
