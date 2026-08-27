@@ -39,6 +39,7 @@ except ValueError:
 NG_WORDS = ["死ね"]
 
 DEVELOPER_USER_ID = 944085652444700702
+BOT_ROLE_ID = 1430878162320887949  # 除外対象のBotロールID
 
 # DoS対策：ユーザーごとの送信クールダウン
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
@@ -52,6 +53,7 @@ managed_temp_vcs: set[int] = set()
 
 intents = discord.Intents.default()
 intents.message_content = True  # DMおよびメッセージ本文の取得用
+intents.members = True          # メンバーリスト取得用
 
 # Webshare等のHTTP/HTTPSプロキシ用
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
@@ -229,7 +231,7 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
         guild = interaction.guild
         member = interaction.user
 
-        if not isinstance(member, discord.Member):
+        if not isinstance(member, discord.Member) or not guild:
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
             return
 
@@ -250,22 +252,50 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
             await interaction.followup.send("VCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
 
 
-class PrivateVCUserSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=120)
+class PrivateVCUserSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, author: discord.Member):
+        options = []
+        for member in guild.members:
+            # Botアカウントまたは作成者自身を除外
+            if member.bot or member.id == author.id:
+                continue
+            # 指定のBotロールを持っていれば除外
+            has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
+            if not has_bot_role:
+                options.append(
+                    discord.SelectOption(
+                        label=member.display_name[:100],
+                        value=str(member.id),
+                        description=f"@{member.name}"[:100],
+                    )
+                )
 
-    @discord.ui.select(
-        cls=discord.ui.UserSelect,
-        placeholder="招待するメンバーを選択してください（複数選択可）",
-        min_values=1,
-        max_values=10
-    )
-    async def select_users(self, interaction: discord.Interaction, select: discord.ui.UserSelect):
+        options = options[:25]  # Discord UIの制限上限25個
+
+        if not options:
+            options.append(
+                discord.SelectOption(
+                    label="招待可能なメンバーがいません", value="none"
+                )
+            )
+
+        super().__init__(
+            placeholder="招待するメンバーを選択してください（複数選択可）",
+            min_values=1,
+            max_values=min(len(options), 10),
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         member = interaction.user
 
-        if not isinstance(member, discord.Member):
+        if self.values[0] == "none":
+            await interaction.followup.send("選択できるメンバーがいません。", ephemeral=True)
+            return
+
+        if not isinstance(member, discord.Member) or not guild:
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
             return
 
@@ -275,13 +305,15 @@ class PrivateVCUserSelectView(discord.ui.View):
             guild.default_role: discord.PermissionOverwrite(connect=False),
             member: discord.PermissionOverwrite(connect=True, move_members=True, manage_channels=True)
         }
-        for target in select.values:
-            if isinstance(target, (discord.Member, discord.User)):
-                overwrites[target] = discord.PermissionOverwrite(connect=True)
+
+        for user_id_str in self.values:
+            target_member = guild.get_member(int(user_id_str))
+            if target_member:
+                overwrites[target_member] = discord.PermissionOverwrite(connect=True)
 
         try:
             vc = await guild.create_voice_channel(
-                name=f"🔒 {member.display_name}のプライベートVC",
+                name=f"🔒 {member.display_name}の秘密部屋",
                 category=category,
                 overwrites=overwrites
             )
@@ -295,6 +327,12 @@ class PrivateVCUserSelectView(discord.ui.View):
         except Exception as e:
             logger.exception("プライベートVC作成中にエラーが発生しました: %s", e)
             await interaction.followup.send("プライベートVCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
+
+
+class PrivateVCUserSelectView(discord.ui.View):
+    def __init__(self, guild: discord.Guild, author: discord.Member):
+        super().__init__(timeout=120)
+        self.add_item(PrivateVCUserSelect(guild, author))
 
 
 class TempVCPanelView(discord.ui.View):
@@ -317,9 +355,13 @@ class TempVCPanelView(discord.ui.View):
         custom_id="create_private_vc_button"
     )
     async def create_private_vc(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not interaction.guild or not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("サーバー内でのみ使用できます。", ephemeral=True)
+            return
+
         await interaction.response.send_message(
             "🔒 **招待したいメンバーを以下から選んでください：**",
-            view=PrivateVCUserSelectView(),
+            view=PrivateVCUserSelectView(interaction.guild, interaction.user),
             ephemeral=True
         )
 
@@ -656,6 +698,11 @@ async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
         bot.add_view(TempVCPanelView())
+        
+        # スラッシュコマンドをDiscordに同期する
+        synced = await bot.tree.sync()
+        logger.info(f"Synced {len(synced)} command(s)")
+        
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         logger.exception("Failed in on_ready: %s", e)
