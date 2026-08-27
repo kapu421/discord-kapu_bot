@@ -281,7 +281,7 @@ class PrivateVCUserSelectView(discord.ui.View):
 
         try:
             vc = await guild.create_voice_channel(
-                name=f"🔒 {member.display_name}の秘密部屋",
+                name=f"🔒 {member.display_name}のプライベートVC",
                 category=category,
                 overwrites=overwrites
             )
