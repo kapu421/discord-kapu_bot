@@ -243,7 +243,6 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
             )
             managed_temp_vcs.add(vc.id)
 
-            # 作成者がどこかのVCに参加していれば作成したVCへ自動移動させる
             if member.voice and member.voice.channel:
                 await member.move_to(vc)
                 await interaction.followup.send(f"✅ {vc.mention} を作成し、移動しました！", ephemeral=True)
@@ -280,20 +279,35 @@ class PrivateVCUserSelect(discord.ui.Select):
             )
 
         super().__init__(
-            placeholder="招待するメンバーを選択してください（複数選択可）",
+            placeholder="招待するメンバーを選択（複数選択可）",
             min_values=1,
             max_values=min(len(options), 10),
             options=options,
         )
 
     async def callback(self, interaction: discord.Interaction):
+        view: PrivateVCUserSelectView = self.view  # type: ignore
+        if self.values[0] == "none":
+            view.selected_user_ids = []
+        else:
+            view.selected_user_ids = [int(v) for v in self.values]
+        
+        await view.update_message(interaction)
+
+
+class CreatePrivateVCButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(
+            label="この内容で作成する",
+            style=discord.ButtonStyle.success,
+            emoji="🔒"
+        )
+
+    async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
+        view: PrivateVCUserSelectView = self.view  # type: ignore
         guild = interaction.guild
         member = interaction.user
-
-        if self.values[0] == "none":
-            await interaction.followup.send("選択できるメンバーがいません。", ephemeral=True)
-            return
 
         if not isinstance(member, discord.Member) or not guild:
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
@@ -306,8 +320,8 @@ class PrivateVCUserSelect(discord.ui.Select):
             member: discord.PermissionOverwrite(connect=True, move_members=True, manage_channels=True)
         }
 
-        for user_id_str in self.values:
-            target_member = guild.get_member(int(user_id_str))
+        for user_id in view.selected_user_ids:
+            target_member = guild.get_member(user_id)
             if target_member:
                 overwrites[target_member] = discord.PermissionOverwrite(connect=True)
 
@@ -319,12 +333,17 @@ class PrivateVCUserSelect(discord.ui.Select):
             )
             managed_temp_vcs.add(vc.id)
 
-            # 作成者がどこかのVCに参加していれば作成したプライベートVCへ自動移動させる
             if member.voice and member.voice.channel:
                 await member.move_to(vc)
                 await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成し、移動しました！", ephemeral=True)
             else:
                 await interaction.followup.send(f"🔒 鍵付きVC {vc.mention} を作成しました！（VCに参加した状態で実行すると自動移動します）", ephemeral=True)
+
+            # ボタンを無効化
+            for item in view.children:
+                item.disabled = True
+            await interaction.edit_original_response(content="✅ プライベートVCの作成が完了しました。", view=view)
+
         except Exception as e:
             logger.exception("プライベートVC作成中にエラーが発生しました: %s", e)
             await interaction.followup.send("プライベートVCの作成に失敗しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
@@ -333,7 +352,24 @@ class PrivateVCUserSelect(discord.ui.Select):
 class PrivateVCUserSelectView(discord.ui.View):
     def __init__(self, guild: discord.Guild, author: discord.Member):
         super().__init__(timeout=120)
+        self.selected_user_ids: list[int] = []
         self.add_item(PrivateVCUserSelect(guild, author))
+        self.add_item(CreatePrivateVCButton())
+
+    def get_status_text(self) -> str:
+        if not self.selected_user_ids:
+            members_text = "未選択"
+        else:
+            members_text = ", ".join([f"<@{uid}>" for uid in self.selected_user_ids])
+
+        return (
+            "🔒 **プライベートVCの設定**\n"
+            "招待したいメンバーを一覧から選択し、最後に**「この内容で作成する」**を押してください。\n\n"
+            f"**選択中の招待メンバー:** {members_text}"
+        )
+
+    async def update_message(self, interaction: discord.Interaction):
+        await interaction.response.edit_message(content=self.get_status_text(), view=self)
 
 
 class TempVCPanelView(discord.ui.View):
@@ -360,9 +396,10 @@ class TempVCPanelView(discord.ui.View):
             await interaction.response.send_message("サーバー内でのみ使用できます。", ephemeral=True)
             return
 
+        view = PrivateVCUserSelectView(interaction.guild, interaction.user)
         await interaction.response.send_message(
-            "🔒 **招待したいメンバーを以下から選んでください：**",
-            view=PrivateVCUserSelectView(interaction.guild, interaction.user),
+            view.get_status_text(),
+            view=view,
             ephemeral=True
         )
 
