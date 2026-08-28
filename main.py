@@ -3,6 +3,7 @@ import logging
 import sys
 import io
 import aiohttp
+import asyncio
 
 import discord
 from discord import app_commands
@@ -129,13 +130,14 @@ async def on_message(message: discord.Message):
             if audio_stream:
                 logger.info("音声データの生成に成功しました。再生を試みます。")
                 try:
+                    # 前の音声が再生中の場合は一度停止
+                    if voice_client.is_playing():
+                        voice_client.stop()
+
                     # FFmpegを使ってDiscordで音声再生
                     source = discord.FFmpegPCMAudio(audio_stream, pipe=True)
-                    if not voice_client.is_playing():
-                        voice_client.play(source)
-                        logger.info("再生を開始しました")
-                    else:
-                        logger.info("現在別の音声を再生中のためスキップしました")
+                    voice_client.play(source)
+                    logger.info("再生を開始しました")
                 except Exception as e:
                     logger.exception("音声再生エラー: %s", e)
             else:
@@ -149,7 +151,7 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
-# --- 自動切断処理（メンバーが全員いなくなったら切断） ---
+# --- 自動切断処理（誤作動防止・ウェイト追加版） ---
 
 @bot.event
 async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -164,10 +166,13 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
 
     # BotがそのVCに参加しているか確認
     if voice_client and voice_client.channel.id == channel.id:
-        # Bot以外の人間（BotフラグがFalseのメンバー）をカウント
+        # 状態変更（メンバーの移動・退出）の反映待ちとして3秒待機
+        await asyncio.sleep(3)
+
+        # 最新のメンバー情報を取得して人間（非Bot）の人数をカウント
         human_members = [m for m in channel.members if not m.bot]
 
-        # 人間が0人になったら切断
+        # 3秒後にも本当に人間が0人だった場合のみ切断
         if len(human_members) == 0:
             await voice_client.disconnect()
             logger.info(f"チャンネル『{channel.name}』から全員が退出したため、Botが自動切断しました。")
@@ -237,7 +242,7 @@ async def leave_slash(interaction: discord.Interaction):
     if not interaction.guild:
         await interaction.response.send_message("サーバー内で実行してください。", ephemeral=True)
         return
-    res = await leave_vc_logic(interaction.guild)
+    res = await leave_slash_logic(interaction.guild)
     await interaction.response.send_message(res)
 
 
