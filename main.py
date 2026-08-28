@@ -327,7 +327,7 @@ class CreatePrivateVCButton(discord.ui.Button):
 
         try:
             vc = await guild.create_voice_channel(
-                name=f"🔒 {member.display_name}の秘密部屋",
+                name=f"🔒 {member.display_name}プライベートVC",
                 category=category if isinstance(category, discord.CategoryChannel) else None,
                 overwrites=overwrites
             )
