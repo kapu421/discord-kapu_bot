@@ -36,7 +36,7 @@ except ValueError:
 
 
 # NGワード
-NG_WORDS = ["死ね"]
+NG_WORDS = ["死ね"`うお"uo"うぉ"tommi"トミー"とみー""]
 
 DEVELOPER_USER_ID = 944085652444700702
 BOT_ROLE_ID = 1430878162320887949       # 除外対象のBotロールID
