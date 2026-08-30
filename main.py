@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+import asyncio
 from typing import Optional
 
 import aiohttp
@@ -874,25 +875,28 @@ async def vc_recruit(interaction: discord.Interaction):
             pass
 
 
-if __name__ == "__main__":
-    keep_alive()
-
-    # 自動リトライ設定（プロキシ不調・接続遮断時の対策）
+async def start_bot_with_retry():
     max_retries = 10
     retry_delay = 10
-    retry_count = 0
 
-    while retry_count < max_retries:
+    for retry_count in range(1, max_retries + 1):
         try:
-            logger.info(f"Botを起動します (試行 {retry_count + 1}/{max_retries})...")
-            bot.run(BOT_TOKEN)
+            logger.info(f"Botを起動します (試行 {retry_count}/{max_retries})...")
+            await bot.start(BOT_TOKEN)
             break
         except Exception as e:
-            retry_count += 1
             logger.exception(f"Botの実行中にエラーが発生しました (試行 {retry_count}/{max_retries}): {e}")
+
+            if not bot.is_closed():
+                await bot.close()
 
             if retry_count < max_retries:
                 logger.info(f"{retry_delay}秒後に再接続を試みます...")
-                time.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
             else:
                 logger.error("最大リトライ回数に達したため起動処理を終了します。")
+
+
+if __name__ == "__main__":
+    keep_alive()
+    asyncio.run(start_bot_with_retry())
