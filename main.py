@@ -233,7 +233,7 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
             return
 
-        name = self.vc_name.value.strip() or f"🔊 {member.display_name}の部屋"
+        name = self.vc_name.value.strip() or f"🔊 {member.display_name}のVC"
         category = guild.get_channel(TARGET_CATEGORY_ID)
 
         try:
@@ -327,7 +327,7 @@ class CreatePrivateVCButton(discord.ui.Button):
 
         try:
             vc = await guild.create_voice_channel(
-                name=f"🔒 {member.display_name}プライベートVC",
+                name=f"🔒 {member.display_name}のプライベートVC",
                 category=category if isinstance(category, discord.CategoryChannel) else None,
                 overwrites=overwrites
             )
