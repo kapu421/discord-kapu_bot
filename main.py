@@ -1,9 +1,10 @@
-import os
 import logging
+import os
 import sys
 import time
 from typing import Optional
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -39,8 +40,8 @@ except ValueError:
 NG_WORDS = ["死ね"]
 
 DEVELOPER_USER_ID = 944085652444700702
-BOT_ROLE_ID = 1430878162320887949       # 除外対象のBotロールID
-TARGET_CATEGORY_ID = 1430828208277946431 # VC作成先のカテゴリID
+BOT_ROLE_ID = 1430878162320887949        # 除外対象のBotロールID
+TARGET_CATEGORY_ID = 1430828208277946431  # VC作成先のカテゴリID
 
 # DoS対策：ユーザーごとの送信クールダウン
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
@@ -72,11 +73,15 @@ if USE_PROXY:
 else:
     logger.info("プロキシなしでDiscordに接続します。")
 
+# プロキシ通信時のタイムアウトを緩和（デフォルトより延長）
+custom_timeout = aiohttp.ClientTimeout(total=30, connect=15)
+
 bot = MyBot(
     command_prefix="!",
     intents=intents,
     help_command=None,
     proxy=proxy_to_use,
+    timeout=30.0  # discord.py のHTTPクライアントタイムアウト設定
 )
 
 # ---------------------------------------------------------
@@ -268,23 +273,23 @@ class PrivateVCUserSelect(discord.ui.Select):
                         description=f"@{member.name}"[:100],
                     )
                 )
-                
-if not options:
-    options.append(
-        discord.SelectOption(
-            label="招待可能なメンバーがいません", value="none"
-        )
-    )
-    max_vals = 1
-else:
-    max_vals = min(len(options), 10)
 
-super().__init__(
-    placeholder="招待するメンバーを選択（複数選択可）",
-    min_values=1,
-    max_values=max_vals,
-    options=options,
-)
+        if not options:
+            options.append(
+                discord.SelectOption(
+                    label="招待可能なメンバーがいません", value="none"
+                )
+            )
+            max_vals = 1
+        else:
+            max_vals = min(len(options), 10)
+
+        super().__init__(
+            placeholder="招待するメンバーを選択（複数選択可）",
+            min_values=1,
+            max_values=max_vals,
+            options=options,
+        )
 
     async def callback(self, interaction: discord.Interaction):
         view: PrivateVCUserSelectView = self.view  # type: ignore
@@ -870,8 +875,24 @@ async def vc_recruit(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    try:
-        keep_alive()
-        bot.run(BOT_TOKEN)
-    except Exception as e:
-        logger.exception("Bot の実行に失敗しました: %s", e)
+    keep_alive()
+
+    # 自動リトライ設定（プロキシ不調・接続遮断時の対策）
+    max_retries = 10
+    retry_delay = 10
+    retry_count = 0
+
+    while retry_count < max_retries:
+        try:
+            logger.info(f"Botを起動します (試行 {retry_count + 1}/{max_retries})...")
+            bot.run(BOT_TOKEN)
+            break
+        except Exception as e:
+            retry_count += 1
+            logger.exception(f"Botの実行中にエラーが発生しました (試行 {retry_count}/{max_retries}): {e}")
+
+            if retry_count < max_retries:
+                logger.info(f"{retry_delay}秒後に再接続を試みます...")
+                time.sleep(retry_delay)
+            else:
+                logger.error("最大リトライ回数に達したため起動処理を終了します。")
