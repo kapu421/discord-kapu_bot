@@ -215,8 +215,20 @@ class AnonymousMessageView(discord.ui.View):
         custom_id="anonymous_message_button",
     )
     async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(AnonymousMessageModal())
-
+        try:
+            await interaction.response.send_modal(AnonymousMessageModal())
+        except discord.NotFound:
+            # 3秒ルール超過や接続遅延によるUnknown Interactionエラーを捕捉
+            logger.warning("インタラクションがタイムアウトしました (Unknown Interaction)。")
+            try:
+                await interaction.followup.send(
+                    "応答に時間がかかりました。もう一度ボタンを押してください。", 
+                    ephemeral=True
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.exception("モーダル表示中にエラーが発生しました: %s", e)
 
 # ---------------------------------------------------------
 # Temp VC（一時VC・プライベートVC）機能
