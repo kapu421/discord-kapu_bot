@@ -268,22 +268,23 @@ class PrivateVCUserSelect(discord.ui.Select):
                         description=f"@{member.name}"[:100],
                     )
                 )
-
-        options = options[:25]
-
-        if not options:
-            options.append(
-                discord.SelectOption(
-                    label="招待可能なメンバーがいません", value="none"
-                )
-            )
-
-        super().__init__(
-            placeholder="招待するメンバーを選択（複数選択可）",
-            min_values=1,
-            max_values=min(len(options), 10),
-            options=options,
+                
+if not options:
+    options.append(
+        discord.SelectOption(
+            label="招待可能なメンバーがいません", value="none"
         )
+    )
+    max_vals = 1
+else:
+    max_vals = min(len(options), 10)
+
+super().__init__(
+    placeholder="招待するメンバーを選択（複数選択可）",
+    min_values=1,
+    max_values=max_vals,
+    options=options,
+)
 
     async def callback(self, interaction: discord.Interaction):
         view: PrivateVCUserSelectView = self.view  # type: ignore
