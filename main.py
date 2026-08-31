@@ -133,7 +133,8 @@ async def send_anonymous_message(interaction: discord.Interaction, message: str)
             await interaction.response.send_message("送信に失敗しました（チャンネルが見つかりません）。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
             return
 
-    if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.PartialMessageable, discord.abc.Messageable)):
+    # チャンネルが Messageable インターフェースを持つかチェック
+    if not hasattr(channel, 'send'):
         await interaction.response.send_message("送信先チャンネルのタイプが不正です。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         return
 
@@ -216,7 +217,12 @@ class AnonymousMessageView(discord.ui.View):
     )
     async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            await interaction.response.send_modal(AnonymousMessageModal())
+            # モーダル表示前に応答を先に確保（3秒ルール対策）
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await asyncio.sleep(0.1)
+            
+            # 遅延後にモーダルを表示
+            await interaction.followup.send_modal(AnonymousMessageModal())
         except discord.NotFound:
             # 3秒ルール超過や接続遅延によるUnknown Interactionエラーを捕捉
             logger.warning("インタラクションがタイムアウトしました (Unknown Interaction)。")
@@ -229,6 +235,13 @@ class AnonymousMessageView(discord.ui.View):
                 pass
         except Exception as e:
             logger.exception("モーダル表示中にエラーが発生しました: %s", e)
+            try:
+                await interaction.followup.send(
+                    "エラーが発生しました。もう一度試してください。",
+                    ephemeral=True
+                )
+            except Exception:
+                pass
 
 # ---------------------------------------------------------
 # Temp VC（一時VC・プライベートVC）機能
@@ -274,18 +287,31 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
 class PrivateVCUserSelect(discord.ui.Select):
     def __init__(self, guild: discord.Guild, author: discord.Member):
         options = []
-        for member in guild.members:
-            if member.bot or member.id == author.id:
-                continue
-            has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
-            if not has_bot_role:
-                options.append(
-                    discord.SelectOption(
-                        label=member.display_name[:100],
-                        value=str(member.id),
-                        description=f"@{member.name}"[:100],
-                    )
-                )
+        
+        # メンバーリストの安全な処理
+        if guild.members:
+            for member in guild.members:
+                # NoneチェックとBotチェック
+                if member is None or member.bot or member.id == author.id:
+                    continue
+                
+                # ロール情報の安全なチェック
+                if not hasattr(member, 'roles'):
+                    continue
+                    
+                try:
+                    has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
+                    if not has_bot_role:
+                        options.append(
+                            discord.SelectOption(
+                                label=member.display_name[:100],
+                                value=str(member.id),
+                                description=f"@{member.name}"[:100],
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"メンバー {member.id} の処理中にエラーが発生しました: {e}")
+                    continue
 
         if not options:
             options.append(
