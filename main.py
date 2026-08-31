@@ -75,14 +75,14 @@ else:
     logger.info("プロキシなしでDiscordに接続します。")
 
 # プロキシ通信時のタイムアウトを緩和（デフォルトより延長）
-custom_timeout = aiohttp.ClientTimeout(total=30, connect=15)
+custom_timeout = aiohttp.ClientTimeout(total=60, connect=30)  # タイムアウト延長
 
 bot = MyBot(
     command_prefix="!",
     intents=intents,
     help_command=None,
     proxy=proxy_to_use,
-    timeout=30.0  # discord.py のHTTPクライアントタイムアウト設定
+    timeout=60.0  # discord.py のHTTPクライアントタイムアウト設定を延長
 )
 
 # ---------------------------------------------------------
@@ -217,12 +217,17 @@ class AnonymousMessageView(discord.ui.View):
     )
     async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            # モーダル表示前に応答を先に確保（3秒ルール対策）
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await asyncio.sleep(0.1)
-            
-            # 遅延後にモーダルを表示
-            await interaction.followup.send_modal(AnonymousMessageModal())
+            # モーダル表示前に応答を確保（3秒ルール対策）
+            await interaction.response.send_modal(AnonymousMessageModal())
+        except asyncio.TimeoutError:
+            logger.warning("モーダル送信時にタイムアウトしました（API接続遅延）。")
+            try:
+                await interaction.followup.send(
+                    "ボタン反応が遅くなっています。もう一度試してください。", 
+                    ephemeral=True
+                )
+            except Exception:
+                pass
         except discord.NotFound:
             # 3秒ルール超過や接続遅延によるUnknown Interactionエラーを捕捉
             logger.warning("インタラクションがタイムアウトしました (Unknown Interaction)。")
@@ -233,8 +238,18 @@ class AnonymousMessageView(discord.ui.View):
                 )
             except Exception:
                 pass
+        except discord.HTTPException as e:
+            # API接続エラー全般をキャッチ
+            logger.warning(f"Discord API エラーが発生しました: {e.status} {e}")
+            try:
+                await interaction.followup.send(
+                    "サーバー通信中にエラーが発生しました。しばらく待ってから再度試してください。", 
+                    ephemeral=True
+                )
+            except Exception:
+                pass
         except Exception as e:
-            logger.exception("モーダル表示中にエラーが発生しました: %s", e)
+            logger.exception("モ��ダル表示中にエラーが発生しました: %s", e)
             try:
                 await interaction.followup.send(
                     "エラーが発生しました。もう一度試してください。",
@@ -291,7 +306,7 @@ class PrivateVCUserSelect(discord.ui.Select):
         # メンバーリストの安全な処理
         if guild.members:
             for member in guild.members:
-                # NoneチェックとBotチェック
+                # None チェックと Bot チェック
                 if member is None or member.bot or member.id == author.id:
                     continue
                 
@@ -701,7 +716,7 @@ async def handle_anonymous_dm(message: discord.Message):
 
     if content and contains_ng_word(content):
         try:
-            await message.channel.send("不適切な言葉が含まれています")
+            await message.channel.send("不適切な言���が含まれています")
         except Exception:
             pass
         return
