@@ -1,11 +1,9 @@
-import logging
 import os
+import logging
 import sys
 import time
-import asyncio
 from typing import Optional
 
-import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -41,8 +39,8 @@ except ValueError:
 NG_WORDS = ["死ね"]
 
 DEVELOPER_USER_ID = 944085652444700702
-BOT_ROLE_ID = 1430878162320887949        # 除外対象のBotロールID
-TARGET_CATEGORY_ID = 1430828208277946431  # VC作成先のカテゴリID
+BOT_ROLE_ID = 1430878162320887949       # 除外対象のBotロールID
+TARGET_CATEGORY_ID = 1430828208277946431 # VC作成先のカテゴリID
 
 # DoS対策：ユーザーごとの送信クールダウン
 ANONYMOUS_MSG_COOLDOWN_SECONDS = 5
@@ -74,15 +72,11 @@ if USE_PROXY:
 else:
     logger.info("プロキシなしでDiscordに接続します。")
 
-# プロキシ通信時のタイムアウトを緩和（デフォルトより延長）
-custom_timeout = aiohttp.ClientTimeout(total=60, connect=30)  # タイムアウト延長
-
 bot = MyBot(
     command_prefix="!",
     intents=intents,
     help_command=None,
     proxy=proxy_to_use,
-    timeout=60.0  # discord.py のHTTPクライアントタイムアウト設定を延長
 )
 
 # ---------------------------------------------------------
@@ -133,8 +127,7 @@ async def send_anonymous_message(interaction: discord.Interaction, message: str)
             await interaction.response.send_message("送信に失敗しました（チャンネルが見つかりません）。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
             return
 
-    # チャンネルが Messageable インターフェースを持つかチェック
-    if not hasattr(channel, 'send'):
+    if not isinstance(channel, (discord.TextChannel, discord.Thread, discord.PartialMessageable, discord.abc.Messageable)):
         await interaction.response.send_message("送信先チャンネルのタイプが不正です。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         return
 
@@ -216,47 +209,8 @@ class AnonymousMessageView(discord.ui.View):
         custom_id="anonymous_message_button",
     )
     async def send_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            # モーダル表示前に応答を確保（3秒ルール対策）
-            await interaction.response.send_modal(AnonymousMessageModal())
-        except asyncio.TimeoutError:
-            logger.warning("モーダル送信時にタイムアウトしました（API接続遅延）。")
-            try:
-                await interaction.followup.send(
-                    "ボタン反応が遅くなっています。もう一度試してください。", 
-                    ephemeral=True
-                )
-            except Exception:
-                pass
-        except discord.NotFound:
-            # 3秒ルール超過や接続遅延によるUnknown Interactionエラーを捕捉
-            logger.warning("インタラクションがタイムアウトしました (Unknown Interaction)。")
-            try:
-                await interaction.followup.send(
-                    "応答に時間がかかりました。もう一度ボタンを押してください。", 
-                    ephemeral=True
-                )
-            except Exception:
-                pass
-        except discord.HTTPException as e:
-            # API接続エラー全般をキャッチ
-            logger.warning(f"Discord API エラーが発生しました: {e.status} {e}")
-            try:
-                await interaction.followup.send(
-                    "サーバー通信中にエラーが発生しました。しばらく待ってから再度試してください。", 
-                    ephemeral=True
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            logger.exception("モ��ダル表示中にエラーが発生しました: %s", e)
-            try:
-                await interaction.followup.send(
-                    "エラーが発生しました。もう一度試してください。",
-                    ephemeral=True
-                )
-            except Exception:
-                pass
+        await interaction.response.send_modal(AnonymousMessageModal())
+
 
 # ---------------------------------------------------------
 # Temp VC（一時VC・プライベートVC）機能
@@ -279,7 +233,7 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
             await interaction.followup.send("この機能はサーバー内でのみ使用できます。", ephemeral=True)
             return
 
-        name = self.vc_name.value.strip() or f"🔊 {member.display_name}のVC"
+        name = self.vc_name.value.strip() or f"🔊 {member.display_name}の部屋"
         category = guild.get_channel(TARGET_CATEGORY_ID)
 
         try:
@@ -302,31 +256,20 @@ class TempVCModal(discord.ui.Modal, title="一時VCを作成"):
 class PrivateVCUserSelect(discord.ui.Select):
     def __init__(self, guild: discord.Guild, author: discord.Member):
         options = []
-        
-        # メンバーリストの安全な処理
-        if guild.members:
-            for member in guild.members:
-                # None チェックと Bot チェック
-                if member is None or member.bot or member.id == author.id:
-                    continue
-                
-                # ロール情報の安全なチェック
-                if not hasattr(member, 'roles'):
-                    continue
-                    
-                try:
-                    has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
-                    if not has_bot_role:
-                        options.append(
-                            discord.SelectOption(
-                                label=member.display_name[:100],
-                                value=str(member.id),
-                                description=f"@{member.name}"[:100],
-                            )
-                        )
-                except Exception as e:
-                    logger.warning(f"メンバー {member.id} の処理中にエラーが発生しました: {e}")
-                    continue
+        for member in guild.members:
+            if member.bot or member.id == author.id:
+                continue
+            has_bot_role = any(role.id == BOT_ROLE_ID for role in member.roles)
+            if not has_bot_role:
+                options.append(
+                    discord.SelectOption(
+                        label=member.display_name[:100],
+                        value=str(member.id),
+                        description=f"@{member.name}"[:100],
+                    )
+                )
+
+        options = options[:25]
 
         if not options:
             options.append(
@@ -334,14 +277,11 @@ class PrivateVCUserSelect(discord.ui.Select):
                     label="招待可能なメンバーがいません", value="none"
                 )
             )
-            max_vals = 1
-        else:
-            max_vals = min(len(options), 10)
 
         super().__init__(
             placeholder="招待するメンバーを選択（複数選択可）",
             min_values=1,
-            max_values=max_vals,
+            max_values=min(len(options), 10),
             options=options,
         )
 
@@ -387,7 +327,7 @@ class CreatePrivateVCButton(discord.ui.Button):
 
         try:
             vc = await guild.create_voice_channel(
-                name=f"🔒 {member.display_name}のプライベートVC",
+                name=f"🔒 {member.display_name}の秘密部屋",
                 category=category if isinstance(category, discord.CategoryChannel) else None,
                 overwrites=overwrites
             )
@@ -716,7 +656,7 @@ async def handle_anonymous_dm(message: discord.Message):
 
     if content and contains_ng_word(content):
         try:
-            await message.channel.send("不適切な言���が含まれています")
+            await message.channel.send("不適切な言葉が含まれています")
         except Exception:
             pass
         return
@@ -928,28 +868,9 @@ async def vc_recruit(interaction: discord.Interaction):
             pass
 
 
-async def start_bot_with_retry():
-    max_retries = 10
-    retry_delay = 10
-
-    for retry_count in range(1, max_retries + 1):
-        try:
-            logger.info(f"Botを起動します (試行 {retry_count}/{max_retries})...")
-            await bot.start(BOT_TOKEN)
-            break
-        except Exception as e:
-            logger.exception(f"Botの実行中にエラーが発生しました (試行 {retry_count}/{max_retries}): {e}")
-
-            if not bot.is_closed():
-                await bot.close()
-
-            if retry_count < max_retries:
-                logger.info(f"{retry_delay}秒後に再接続を試みます...")
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.error("最大リトライ回数に達したため起動処理を終了します。")
-
-
 if __name__ == "__main__":
-    keep_alive()
-    asyncio.run(start_bot_with_retry())
+    try:
+        keep_alive()
+        bot.run(BOT_TOKEN)
+    except Exception as e:
+        logger.exception("Bot の実行に失敗しました: %s", e)
