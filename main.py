@@ -2,6 +2,8 @@ import os
 import logging
 import sys
 import time
+import asyncio
+import random
 from typing import Optional
 
 import discord
@@ -49,6 +51,9 @@ _last_sent_at: dict[int, float] = {}
 # 自動管理用データ保持構造
 active_recruitments: dict[int, dict] = {}
 managed_temp_vcs: set[int] = set()
+
+# ギブアウェイデータ保持用構造
+active_giveaways: dict[int, dict] = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -619,6 +624,144 @@ class VCRecruitView(discord.ui.View):
 
 
 # ---------------------------------------------------------
+# ギブアウェイ（プレゼント企画）機能
+# ---------------------------------------------------------
+
+class GiveawayJoinView(discord.ui.View):
+    """ギブアウェイ参加用の永続View"""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="🎉 参加する",
+        style=discord.ButtonStyle.primary,
+        custom_id="giveaway_join_button"
+    )
+    async def join_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        msg_id = interaction.message.id
+        giveaway = active_giveaways.get(msg_id)
+
+        if not giveaway:
+            await interaction.response.send_message("このギブアウェイはすでに終了しているか、存在しません。", ephemeral=True)
+            return
+
+        user_id = interaction.user.id
+        participants: set = giveaway["participants"]
+
+        if user_id in participants:
+            participants.remove(user_id)
+            await interaction.response.send_message("参加を取り消しました。", ephemeral=True)
+        else:
+            participants.add(user_id)
+            await interaction.response.send_message("🎉 ギブアウェイに参加しました！", ephemeral=True)
+
+
+class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細設定"):
+    prize_name = discord.ui.TextInput(
+        label="景品名・企画タイトル",
+        placeholder="例: Amazonギフト券 1000円分",
+        required=True,
+        max_length=100
+    )
+    winner_count = discord.ui.TextInput(
+        label="当選人数",
+        placeholder="例: 1",
+        default="1",
+        required=True,
+        max_length=3
+    )
+    duration_minutes = discord.ui.TextInput(
+        label="開催時間（分）",
+        placeholder="例: 60（※0を指定すると手動終了モードになります）",
+        default="60",
+        required=True,
+        max_length=5
+    )
+    description = discord.ui.TextInput(
+        label="説明・参加条件など（任意）",
+        style=discord.TextStyle.paragraph,
+        placeholder="例: フォロー＆リツイートが条件です！",
+        required=False,
+        max_length=1000
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            winners = int(self.winner_count.value)
+            duration = int(self.duration_minutes.value)
+            if winners <= 0 or duration < 0:
+                raise ValueError
+        except ValueError:
+            await interaction.response.send_message("当選人数と開催時間は正しい整数で入力してください。", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title=f"🎉 プレゼント企画: {self.prize_name.value}",
+            description=self.description.value or "下のボタンを押してエントリーしてください！",
+            color=discord.Color.gold()
+        )
+        embed.add_field(name="🎁 景品", value=self.prize_name.value, inline=True)
+        embed.add_field(name="👥 当選者数", value=f"{winners} 名", inline=True)
+
+        if duration > 0:
+            embed.add_field(name="⏳ 開催時間", value=f"{duration} 分", inline=False)
+        else:
+            embed.add_field(name="⏳ 開催時間", value="手動終了まで", inline=False)
+
+        embed.set_footer(text=f"主催者: {interaction.user.display_name}")
+
+        # 公開チャンネルにパネルを送信
+        join_view = GiveawayJoinView()
+        await interaction.response.send_message(embed=embed, view=join_view)
+
+        msg = await interaction.original_response()
+        active_giveaways[msg.id] = {
+            "prize": self.prize_name.value,
+            "winners": winners,
+            "participants": set(),
+            "channel_id": interaction.channel_id
+        }
+
+        if duration > 0:
+            await asyncio.sleep(duration * 60)
+            await finish_giveaway(msg.id)
+
+
+async def finish_giveaway(message_id: int):
+    """ギブアウェイの終了とランダム抽選のロジック"""
+    giveaway = active_giveaways.pop(message_id, None)
+    if not giveaway:
+        return
+
+    channel = bot.get_channel(giveaway["channel_id"])
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(giveaway["channel_id"])
+        except Exception as e:
+            logger.exception("ギブアウェイ送信先チャンネルの取得に失敗: %s", e)
+            return
+
+    participants = list(giveaway["participants"])
+    prize = giveaway["prize"]
+    winner_count = giveaway["winners"]
+
+    if not participants:
+        await channel.send(f"📢 **【ギブアウェイ終了】**\n`{prize}` の抽選が終了しましたが、参加者がいませんでした。")
+        return
+
+    actual_winner_count = min(winner_count, len(participants))
+    winners = random.sample(participants, actual_winner_count)
+    winner_mentions = ", ".join([f"<@{uid}>" for uid in winners])
+
+    embed = discord.Embed(
+        title="🎊 抽選結果発表 🎊",
+        description=f"**景品:** {prize}\n\n**🎉 当選者:**\n{winner_mentions}\n\nおめでとうございます！主催者からの連絡をお待ちください。",
+        color=discord.Color.green()
+    )
+    await channel.send(content=" ".join([f"<@{uid}>" for uid in winners]), embed=embed)
+
+
+# ---------------------------------------------------------
 # イベントハンドラー
 # ---------------------------------------------------------
 
@@ -736,10 +879,11 @@ async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
         bot.add_view(TempVCPanelView())
-        
+        bot.add_view(GiveawayJoinView())  # ギブアウェイ永続ビューを登録
+
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} command(s)")
-        
+
         logger.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
     except Exception as e:
         logger.exception("Failed in on_ready: %s", e)
@@ -866,6 +1010,28 @@ async def vc_recruit(interaction: discord.Interaction):
             await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
+
+
+@bot.tree.command(name="giveawayset", description="プレゼント企画（ギブアウェイ）を作成・開始します")
+async def giveawayset(interaction: discord.Interaction):
+    await interaction.response.send_modal(GiveawaySetupModal())
+
+
+@bot.tree.command(name="giveawayend", description="指定したギブアウェイを手動で即時終了・抽選します")
+@app_commands.describe(message_id="対象のギブアウェイメッセージID")
+async def giveawayend(interaction: discord.Interaction, message_id: str):
+    try:
+        msg_id = int(message_id)
+    except ValueError:
+        await interaction.response.send_message("正しいメッセージID（数字）を入力してください。", ephemeral=True)
+        return
+
+    if msg_id not in active_giveaways:
+        await interaction.response.send_message("指定されたギブアウェイが見つからないか、すでに終了しています。", ephemeral=True)
+        return
+
+    await interaction.response.send_message("ギブアウェイを終了し、抽選を行います...", ephemeral=True)
+    await finish_giveaway(msg_id)
 
 
 if __name__ == "__main__":
