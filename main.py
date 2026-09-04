@@ -24,6 +24,7 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID_STR = os.getenv("CHANNEL_ID")
+MOD_LOG_CHANNEL_ID_STR = os.getenv("MOD_LOG_CHANNEL_ID")  # モデレーションログ用チャンネルID
 
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN が .env に設定されていません。")
@@ -38,6 +39,17 @@ try:
 except ValueError:
     logger.error("CHANNEL_ID は整数である必要があります。")
     sys.exit("CHANNEL_ID must be an integer in .env")
+
+# モデレーションログ用チャンネルIDの設定 (未設定の場合はデフォルトチャンネル等にフォールバック)
+MOD_LOG_CHANNEL_ID: Optional[int] = None
+if MOD_LOG_CHANNEL_ID_STR:
+    try:
+        MOD_LOG_CHANNEL_ID = int(MOD_LOG_CHANNEL_ID_STR)
+    except ValueError:
+        logger.warning("MOD_LOG_CHANNEL_ID は整数である必要があります。デフォルトの CHANNEL_ID を利用します。")
+        MOD_LOG_CHANNEL_ID = CHANNEL_ID
+else:
+    MOD_LOG_CHANNEL_ID = CHANNEL_ID
 
 
 # NGワード
@@ -86,6 +98,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 intents.reactions = True  # リアクション検知を有効化
+intents.moderation = True  # BAN/Kick/タイムアウトなどのログ検知に必要
 
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
 PROXY_URL = os.getenv("PROXY_URL")
@@ -1017,6 +1030,117 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
             pass
         except Exception as e:
             logger.exception("一時VCの削除中にエラーが発生しました: %s", e)
+
+
+# ---------------------------------------------------------
+# モデレーション（BAN/Unban/Kick/Timeout）ログ機能
+# ---------------------------------------------------------
+
+# --- BAN ログ ---
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    if not MOD_LOG_CHANNEL_ID:
+        return
+    channel = guild.get_channel(MOD_LOG_CHANNEL_ID) or bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+            if entry.target.id == user.id:
+                embed = discord.Embed(title="⛔ Member Banned", color=discord.Color.red())
+                embed.add_field(name="対象ユーザー", value=f"{user.name} (`{user.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("BAN ログ処理中にエラーが発生しました: %s", e)
+
+
+# --- BAN 解除 ログ ---
+@bot.event
+async def on_member_unban(guild: discord.Guild, user: discord.User):
+    if not MOD_LOG_CHANNEL_ID:
+        return
+    channel = guild.get_channel(MOD_LOG_CHANNEL_ID) or bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.unban):
+            if entry.target.id == user.id:
+                embed = discord.Embed(title="🔓 Member Unbanned", color=discord.Color.green())
+                embed.add_field(name="対象ユーザー", value=f"{user.name} (`{user.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("BAN解除 ログ処理中にエラーが発生しました: %s", e)
+
+
+# --- Kick ログ ---
+@bot.event
+async def on_member_remove(member: discord.Member):
+    if not MOD_LOG_CHANNEL_ID:
+        return
+    channel = member.guild.get_channel(MOD_LOG_CHANNEL_ID) or bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    try:
+        async for entry in member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick):
+            if entry.target.id == member.id:
+                embed = discord.Embed(title="👢 Member Kicked", color=discord.Color.orange())
+                embed.add_field(name="対象ユーザー", value=f"{member.name} (`{member.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("Kick ログ処理中にエラーが発生しました: %s", e)
+
+
+# --- タイムアウト付与・解除 ログ ---
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    if not MOD_LOG_CHANNEL_ID:
+        return
+    channel = after.guild.get_channel(MOD_LOG_CHANNEL_ID) or bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if not channel:
+        return
+
+    if before.timed_out_until != after.timed_out_until:
+        try:
+            # タイムアウト付与時
+            if after.timed_out_until is not None:
+                async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                    if entry.target.id == after.id:
+                        embed = discord.Embed(title="⏰ Member Timed Out", color=discord.Color.gold())
+                        embed.add_field(name="対象ユーザー", value=f"{after.name} (`{after.id}`)", inline=False)
+                        embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                        embed.add_field(
+                            name="解除予定時刻",
+                            value=after.timed_out_until.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                            inline=False,
+                        )
+                        embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                        await channel.send(embed=embed)
+                        break
+
+            # タイムアウト解除時
+            elif before.timed_out_until is not None and after.timed_out_until is None:
+                async for entry in after.guild.audit_logs(limit=1, action=discord.AuditLogAction.member_update):
+                    if entry.target.id == after.id:
+                        embed = discord.Embed(title="🔊 Timeout Removed", color=discord.Color.blue())
+                        embed.add_field(name="対象ユーザー", value=f"{after.name} (`{after.id}`)", inline=False)
+                        embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                        embed.add_field(name="理由", value=entry.reason or "手動解除または時間経過", inline=False)
+                        await channel.send(embed=embed)
+                        break
+        except Exception as e:
+            logger.exception("タイムアウト ログ処理中にエラーが発生しました: %s", e)
 
 
 # ---------------------------------------------------------
