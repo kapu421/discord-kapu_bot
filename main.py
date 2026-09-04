@@ -7,6 +7,7 @@ import random
 import datetime
 from datetime import timedelta
 from typing import Optional
+import json
 
 import discord
 from discord import app_commands
@@ -57,9 +58,34 @@ managed_temp_vcs: set[int] = set()
 # ギブアウェイデータ保持用構造
 active_giveaways: dict[int, dict] = {}
 
+# ---------------------------------------------------------
+# ロールパネル用データ読み書き (JSON保存)
+# ---------------------------------------------------------
+ROLE_PANEL_FILE = "role_panels.json"
+
+def load_role_panels():
+    if os.path.exists(ROLE_PANEL_FILE):
+        try:
+            with open(ROLE_PANEL_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.exception("ロールパネルデータの読み込みに失敗しました: %s", e)
+    return {}
+
+def save_role_panels(data):
+    try:
+        with open(ROLE_PANEL_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        logger.exception("ロールパネルデータの保存に失敗しました: %s", e)
+
+role_panel_data = load_role_panels()
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
+intents.reactions = True  # リアクション検知を有効化
 
 USE_PROXY = os.getenv("USE_PROXY", "false").lower() in ("true", "1", "yes")
 PROXY_URL = os.getenv("PROXY_URL")
@@ -713,14 +739,12 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
             end_time = now + timedelta(minutes=duration)
             end_timestamp = int(end_time.timestamp())
 
-            # :f フラグで「日付・時間」のみをシンプルに表示（「〇分前」のような相対表記は除外）
             embed.add_field(name="📅 終了予定日時", value=f"<t:{end_timestamp}:f>", inline=False)
         else:
             embed.add_field(name="⏳ 開催時間", value="手動終了まで", inline=False)
 
         embed.set_footer(text=f"主催者: {interaction.user.display_name}")
 
-        # 公開チャンネルにパネルを送信
         join_view = GiveawayJoinView()
         await interaction.response.send_message(embed=embed, view=join_view)
 
@@ -738,7 +762,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
 
 
 async def finish_giveaway(message_id: int):
-    """ギブアウェイの終了とランダム抽選のロジック"""
     giveaway = active_giveaways.pop(message_id, None)
     if not giveaway:
         return
@@ -751,7 +774,6 @@ async def finish_giveaway(message_id: int):
             logger.exception("ギブアウェイ送信先チャンネルの取得に失敗: %s", e)
             return
 
-    # 元のパネルメッセージを更新（終了表示・ボタン無効化）
     try:
         panel_msg = await channel.fetch_message(message_id)
         if panel_msg and panel_msg.embeds:
@@ -760,7 +782,6 @@ async def finish_giveaway(message_id: int):
             embed.color = discord.Color.dark_gray()
             embed.add_field(name="状態", value="このギブアウェイは終了しました。", inline=False)
             
-            # ボタンをすべて無効化したViewを設定
             disabled_view = GiveawayJoinView(disabled=True)
             await panel_msg.edit(embed=embed, view=disabled_view)
     except Exception as e:
@@ -900,11 +921,59 @@ async def handle_anonymous_dm(message: discord.Message):
 
 
 @bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    # Bot自身のリアクションは無視
+    if payload.user_id == bot.user.id:
+        return
+
+    msg_id_str = str(payload.message_id)
+
+    # ロールパネルのメッセージIDでなければスルー
+    if msg_id_str not in role_panel_data:
+        return
+
+    emoji_mapping = role_panel_data[msg_id_str]
+    emoji_str = str(payload.emoji)
+
+    if emoji_str in emoji_mapping:
+        guild = bot.get_guild(payload.guild_id)
+        if guild is None:
+            return
+
+        member = payload.member
+        if member is None:
+            return
+
+        role_id = emoji_mapping[emoji_str]
+        role = guild.get_role(role_id)
+
+        if role:
+            # 1. ユーザーが付けたリアクションを自動消去
+            try:
+                channel = bot.get_channel(payload.channel_id) or await bot.fetch_channel(payload.channel_id)
+                message = await channel.fetch_message(payload.message_id)
+                await message.remove_reaction(payload.emoji, member)
+            except discord.HTTPException:
+                pass
+
+            # 2. ロールの付与/解除（トグル処理）
+            try:
+                if role in member.roles:
+                    await member.remove_roles(role)
+                    logger.info(f"{member.display_name} からロール {role.name} を削除しました。")
+                else:
+                    await member.add_roles(role)
+                    logger.info(f"{member.display_name} にロール {role.name} を付与しました。")
+            except discord.Forbidden:
+                logger.error(f"ロール {role.name} の変更権限がBotにありません。")
+
+
+@bot.event
 async def on_ready():
     try:
         bot.add_view(AnonymousMessageView())
         bot.add_view(TempVCPanelView())
-        bot.add_view(GiveawayJoinView())  # ギブアウェイ永続ビューを登録
+        bot.add_view(GiveawayJoinView())
 
         synced = await bot.tree.sync()
         logger.info(f"Synced {len(synced)} command(s)")
@@ -1022,6 +1091,63 @@ async def admin_command_error(interaction: discord.Interaction, error: app_comma
             await interaction.response.send_message("エラーが発生しました。Kapu (discord: kapu421) に連絡してください。", ephemeral=True)
         except Exception:
             pass
+
+
+@bot.tree.command(name="setup-rolepanel", description="【管理者用】複数ロールを付与できるリアクションパネルを作成します")
+@app_commands.checks.has_permissions(manage_guild=True)
+@app_commands.describe(
+    title="パネルのタイトル",
+    emoji1="1つ目の絵文字", role1="1つ目のロール",
+    emoji2="2つ目の絵文字 (任意)", role2="2つ目のロール (任意)",
+    emoji3="3つ目の絵文字 (任意)", role3="3つ目のロール (任意)",
+    emoji4="4つ目の絵文字 (任意)", role4="4つ目のロール (任意)",
+    emoji5="5つ目の絵文字 (任意)", role5="5つ目のロール (任意)"
+)
+async def setup_rolepanel(
+    interaction: discord.Interaction,
+    title: str,
+    emoji1: str, role1: discord.Role,
+    emoji2: str = None, role2: discord.Role = None,
+    emoji3: str = None, role3: discord.Role = None,
+    emoji4: str = None, role4: discord.Role = None,
+    emoji5: str = None, role5: discord.Role = None
+):
+    pairs = [
+        (emoji1, role1), (emoji2, role2), (emoji3, role3),
+        (emoji4, role4), (emoji5, role5)
+    ]
+    valid_pairs = [(e, r) for e, r in pairs if e and r]
+
+    if not valid_pairs:
+        await interaction.response.send_message("少なくとも1つの絵文字とロールを指定してください。", ephemeral=True)
+        return
+
+    description_lines = ["リアクションを押してロールを着脱できます:\n"]
+    mapping = {}
+
+    for emoji, role in valid_pairs:
+        description_lines.append(f"{emoji} : {role.mention}")
+        mapping[emoji] = role.id
+
+    embed = discord.Embed(
+        title=title,
+        description="\n".join(description_lines),
+        color=discord.Color.blue()
+    )
+
+    await interaction.response.send_message("パネルを作成しました！", ephemeral=True)
+
+    channel = interaction.channel
+    message = await channel.send(embed=embed)
+
+    for emoji, _ in valid_pairs:
+        try:
+            await message.add_reaction(emoji)
+        except discord.HTTPException:
+            pass
+
+    role_panel_data[str(message.id)] = mapping
+    save_role_panels(role_panel_data)
 
 
 @bot.tree.command(name="vc", description="VC募集を作成します（ロール・内容・VC・一言を選んで送信）")
