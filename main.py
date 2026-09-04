@@ -631,8 +631,11 @@ class VCRecruitView(discord.ui.View):
 
 class GiveawayJoinView(discord.ui.View):
     """ギブアウェイ参加用の永続View"""
-    def __init__(self):
+    def __init__(self, disabled: bool = False):
         super().__init__(timeout=None)
+        if disabled:
+            for item in self.children:
+                item.disabled = True
 
     @discord.ui.button(
         label="🎉 参加する",
@@ -673,14 +676,16 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
         max_length=3
     )
     duration_minutes = discord.ui.TextInput(
-        label="開催時間（分）※99999(約69日)まで可能です",
+        label="開催時間（分）",
         placeholder="例: 60（※0を指定すると手動終了モードになります）",
+        default="60",
         required=True,
         max_length=5
     )
     description = discord.ui.TextInput(
         label="説明・参加条件など（任意）",
         style=discord.TextStyle.paragraph,
+        placeholder="例: フォロー＆リツイートが条件です！",
         required=False,
         max_length=1000
     )
@@ -704,28 +709,12 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
         embed.add_field(name="👥 当選者数", value=f"{winners} 名", inline=True)
 
         if duration > 0:
-            # 1. 「〇日〇時間〇分」のわかりやすい表示形式に変換
-            days = duration // 1440
-            hours = (duration % 1440) // 60
-            minutes = duration % 60
-
-            time_parts = []
-            if days > 0:
-                time_parts.append(f"{days}日")
-            if hours > 0:
-                time_parts.append(f"{hours}時間")
-            if minutes > 0 or not time_parts:
-                time_parts.append(f"{minutes}分")
-            
-            readable_duration = "".join(time_parts)
-
-            # 2. 現在時刻に指定分数を足して終了日時を計算（Discordタイムスタンプ形式）
             now = datetime.datetime.now(datetime.timezone.utc)
             end_time = now + timedelta(minutes=duration)
             end_timestamp = int(end_time.timestamp())
 
-            embed.add_field(name="⏳ 開催時間", value=readable_duration, inline=False)
-            embed.add_field(name="📅 終了予定日時", value=f"<t:{end_timestamp}:F> (<t:{end_timestamp}:R>)", inline=False)
+            # :f フラグで「日付・時間」のみをシンプルに表示（「〇分前」のような相対表記は除外）
+            embed.add_field(name="📅 終了予定日時", value=f"<t:{end_timestamp}:f>", inline=False)
         else:
             embed.add_field(name="⏳ 開催時間", value="手動終了まで", inline=False)
 
@@ -761,6 +750,21 @@ async def finish_giveaway(message_id: int):
         except Exception as e:
             logger.exception("ギブアウェイ送信先チャンネルの取得に失敗: %s", e)
             return
+
+    # 元のパネルメッセージを更新（終了表示・ボタン無効化）
+    try:
+        panel_msg = await channel.fetch_message(message_id)
+        if panel_msg and panel_msg.embeds:
+            embed = panel_msg.embeds[0]
+            embed.title = f"🔒 【終了】プレゼント企画: {giveaway['prize']}"
+            embed.color = discord.Color.dark_gray()
+            embed.add_field(name="状態", value="このギブアウェイは終了しました。", inline=False)
+            
+            # ボタンをすべて無効化したViewを設定
+            disabled_view = GiveawayJoinView(disabled=True)
+            await panel_msg.edit(embed=embed, view=disabled_view)
+    except Exception as e:
+        logger.exception("ギブアウェイパネルの更新に失敗しました: %s", e)
 
     participants = list(giveaway["participants"])
     prize = giveaway["prize"]
