@@ -682,7 +682,6 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
     description = discord.ui.TextInput(
         label="説明・参加条件など（任意）",
         style=discord.TextStyle.paragraph,
-        placeholder="例: フォロー＆リツイートが条件です！",
         required=False,
         max_length=1000
     )
