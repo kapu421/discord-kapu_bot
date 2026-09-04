@@ -4,6 +4,8 @@ import sys
 import time
 import asyncio
 import random
+import datetime
+from datetime import timedelta
 from typing import Optional
 
 import discord
@@ -704,7 +706,28 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
         embed.add_field(name="👥 当選者数", value=f"{winners} 名", inline=True)
 
         if duration > 0:
-            embed.add_field(name="⏳ 開催時間", value=f"{duration} 分", inline=False)
+            # 1. 「〇日〇時間〇分」のわかりやすい表示形式に変換
+            days = duration // 1440
+            hours = (duration % 1440) // 60
+            minutes = duration % 60
+
+            time_parts = []
+            if days > 0:
+                time_parts.append(f"{days}日")
+            if hours > 0:
+                time_parts.append(f"{hours}時間")
+            if minutes > 0 or not time_parts:
+                time_parts.append(f"{minutes}分")
+            
+            readable_duration = "".join(time_parts)
+
+            # 2. 現在時刻に指定分数を足して終了日時を計算（Discordタイムスタンプ形式）
+            now = datetime.datetime.now(datetime.timezone.utc)
+            end_time = now + timedelta(minutes=duration)
+            end_timestamp = int(end_time.timestamp())
+
+            embed.add_field(name="⏳ 開催時間", value=readable_duration, inline=False)
+            embed.add_field(name="📅 終了予定日時", value=f"<t:{end_timestamp}:F> (<t:{end_timestamp}:R>)", inline=False)
         else:
             embed.add_field(name="⏳ 開催時間", value="手動終了まで", inline=False)
 
