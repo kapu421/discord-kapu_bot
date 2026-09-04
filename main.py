@@ -673,9 +673,8 @@ class GiveawaySetupModal(discord.ui.Modal, title="🎁 ギブアウェイ詳細�
         max_length=3
     )
     duration_minutes = discord.ui.TextInput(
-        label="開催時間（分）",
+        label="開催時間（分）※99999(約69日)まで可能です",
         placeholder="例: 60（※0を指定すると手動終了モードになります）",
-        default="60",
         required=True,
         max_length=5
     )
