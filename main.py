@@ -817,7 +817,7 @@ async def finish_giveaway(message_id: int):
 
 
 # ---------------------------------------------------------
-# モデレーションログ用関数
+# モデレーションログ用関数（修正・安定化版）
 # ---------------------------------------------------------
 
 def get_mod_log_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
@@ -834,28 +834,20 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     if not channel:
         return
 
-    async for entry in guild.audit_logs(
-        limit=5, action=discord.AuditLogAction.ban
-    ):
-        if entry.target and entry.target.id == user.id:
-            embed = discord.Embed(
-                title="⛔ Member Banned", color=discord.Color.red()
-            )
-            embed.add_field(
-                name="対象ユーザー",
-                value=f"{user.name} (`{user.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="実行者",
-                value=f"{entry.user.name} (`{entry.user.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="理由", value=entry.reason or "理由なし", inline=False
-            )
-            await channel.send(embed=embed)
-            break
+    # Discord側の監査ログ生成の遅延を考慮
+    await asyncio.sleep(1)
+
+    try:
+        async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban):
+            if entry.target and entry.target.id == user.id:
+                embed = discord.Embed(title="⛔ Member Banned", color=discord.Color.red())
+                embed.add_field(name="対象ユーザー", value=f"{user.name} (`{user.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("BAN ログ出力中にエラーが発生しました: %s", e)
 
 
 # --- 2. BAN 解除ログ ---
@@ -865,28 +857,19 @@ async def on_member_unban(guild: discord.Guild, user: discord.User):
     if not channel:
         return
 
-    async for entry in guild.audit_logs(
-        limit=5, action=discord.AuditLogAction.unban
-    ):
-        if entry.target and entry.target.id == user.id:
-            embed = discord.Embed(
-                title="🔓 Member Unbanned", color=discord.Color.green()
-            )
-            embed.add_field(
-                name="対象ユーザー",
-                value=f"{user.name} (`{user.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="実行者",
-                value=f"{entry.user.name} (`{entry.user.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="理由", value=entry.reason or "理由なし", inline=False
-            )
-            await channel.send(embed=embed)
-            break
+    await asyncio.sleep(1)
+
+    try:
+        async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.unban):
+            if entry.target and entry.target.id == user.id:
+                embed = discord.Embed(title="🔓 Member Unbanned", color=discord.Color.green())
+                embed.add_field(name="対象ユーザー", value=f"{user.name} (`{user.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("BAN 解除ログ出力中にエラーが発生しました: %s", e)
 
 
 # --- 3. Kick ログ ---
@@ -896,28 +879,19 @@ async def on_member_remove(member: discord.Member):
     if not channel:
         return
 
-    async for entry in member.guild.audit_logs(
-        limit=5, action=discord.AuditLogAction.kick
-    ):
-        if entry.target and entry.target.id == member.id:
-            embed = discord.Embed(
-                title="👢 Member Kicked", color=discord.Color.orange()
-            )
-            embed.add_field(
-                name="対象ユーザー",
-                value=f"{member.name} (`{member.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="実行者",
-                value=f"{entry.user.name} (`{entry.user.id}`)",
-                inline=False,
-            )
-            embed.add_field(
-                name="理由", value=entry.reason or "理由なし", inline=False
-            )
-            await channel.send(embed=embed)
-            break
+    await asyncio.sleep(1)
+
+    try:
+        async for entry in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick):
+            if entry.target and entry.target.id == member.id:
+                embed = discord.Embed(title="👢 Member Kicked", color=discord.Color.orange())
+                embed.add_field(name="対象ユーザー", value=f"{member.name} (`{member.id}`)", inline=False)
+                embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                await channel.send(embed=embed)
+                break
+    except Exception as e:
+        logger.exception("Kick ログ出力中にエラーが発生しました: %s", e)
 
 
 # --- 4. タイムアウト付与・解除ログ ---
@@ -928,66 +902,39 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         return
 
     if before.timed_out_until != after.timed_out_until:
-        # タイムアウトが付与された場合
-        if after.timed_out_until is not None:
-            async for entry in after.guild.audit_logs(
-                limit=5, action=discord.AuditLogAction.member_update
-            ):
-                if entry.target and entry.target.id == after.id:
-                    embed = discord.Embed(
-                        title="⏰ Member Timed Out",
-                        color=discord.Color.gold(),
-                    )
-                    embed.add_field(
-                        name="対象ユーザー",
-                        value=f"{after.name} (`{after.id}`)",
-                        inline=False,
-                    )
-                    embed.add_field(
-                        name="実行者",
-                        value=f"{entry.user.name} (`{entry.user.id}`)",
-                        inline=False,
-                    )
-                    embed.add_field(
-                        name="解除予定時刻",
-                        value=after.timed_out_until.strftime(
-                            "%Y-%m-%d %H:%M:%S UTC"
-                        ),
-                        inline=False,
-                    )
-                    embed.add_field(
-                        name="理由",
-                        value=entry.reason or "理由なし",
-                        inline=False,
-                    )
-                    await channel.send(embed=embed)
-                    break
+        await asyncio.sleep(1)
 
-        # タイムアウトが解除された場合（手動または時間経過）
-        elif before.timed_out_until is not None and after.timed_out_until is None:
-            executor_text = "自動解除（時間経過）または不明"
-            reason_text = "-"
+        try:
+            # タイムアウトが付与された場合
+            if after.timed_out_until is not None:
+                async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                    if entry.target and entry.target.id == after.id:
+                        embed = discord.Embed(title="⏰ Member Timed Out", color=discord.Color.gold())
+                        embed.add_field(name="対象ユーザー", value=f"{after.name} (`{after.id}`)", inline=False)
+                        embed.add_field(name="実行者", value=f"{entry.user.name} (`{entry.user.id}`)", inline=False)
+                        embed.add_field(name="解除予定時刻", value=after.timed_out_until.strftime("%Y-%m-%d %H:%M:%S UTC"), inline=False)
+                        embed.add_field(name="理由", value=entry.reason or "理由なし", inline=False)
+                        await channel.send(embed=embed)
+                        break
 
-            async for entry in after.guild.audit_logs(
-                limit=5, action=discord.AuditLogAction.member_update
-            ):
-                if entry.target and entry.target.id == after.id:
-                    if hasattr(entry.changes.before, "communication_disabled_until"):
+            # タイムアウトが解除された場合（手動または時間経過）
+            elif before.timed_out_until is not None and after.timed_out_until is None:
+                executor_text = "自動解除（時間経過）または不明"
+                reason_text = "-"
+
+                async for entry in after.guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
+                    if entry.target and entry.target.id == after.id:
                         executor_text = f"{entry.user.name} (`{entry.user.id}`)"
                         reason_text = entry.reason or "理由なし"
                         break
 
-            embed = discord.Embed(
-                title="🔊 Timeout Removed", color=discord.Color.blue()
-            )
-            embed.add_field(
-                name="対象ユーザー",
-                value=f"{after.name} (`{after.id}`)",
-                inline=False,
-            )
-            embed.add_field(name="実行者", value=executor_text, inline=False)
-            embed.add_field(name="理由", value=reason_text, inline=False)
-            await channel.send(embed=embed)
+                embed = discord.Embed(title="🔊 Timeout Removed", color=discord.Color.blue())
+                embed.add_field(name="対象ユーザー", value=f"{after.name} (`{after.id}`)", inline=False)
+                embed.add_field(name="実行者", value=executor_text, inline=False)
+                embed.add_field(name="理由", value=reason_text, inline=False)
+                await channel.send(embed=embed)
+        except Exception as e:
+            logger.exception("タイムアウトログ出力中にエラーが発生しました: %s", e)
 
 
 # ---------------------------------------------------------
